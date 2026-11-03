@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="561eff7"; VPS_BUILD_TIME="2026-11-04 03:55"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="19a0320"; VPS_BUILD_TIME="2026-11-04 04:13"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -1105,16 +1105,6 @@ exit 0; ;;
 rm -f "$tmp"; echo "已取消"; ;;
 esac
 }
-ops_changelog(){ printf "${CLR_CYAN}获取版本日志...${CLR_RESET}\n\n"
-local repo=$(echo "$VPS_RAW_URL" | sed -nE 's|https://raw\.githubusercontent\.com/([^/]+/[^/]+)/.*|\1|p')
-[ -z "$repo" ] && repo="666OS/vps-sh"
-local logs=$(curl -fsSLm 5 "https://api.github.com/repos/$repo/commits?per_page=5" 2>/dev/null | grep -E '"message":' | head -n 5 | sed -E 's/^[[:space:]]*"message":[[:space:]]*"([^"]+)".*/• \1/' || true)
-if [ -n "$logs" ]; then
-printf "${CLR_BOLD}--- 版本日志 ---${CLR_RESET}\n\n"; echo "$logs"; echo
-else
-printf "${CLR_DIM}版本日志: https://github.com/%s/commits/main${CLR_RESET}\n\n" "$repo"
-fi
-}
 ui_ops_ports(){ clear; local total=$(ss -tulpn 2>/dev/null | awk 'NR>1' | wc -l | tr -d ' ')
 printf "${CLR_BOLD}--- 监听端口 ---${CLR_RESET}\n"; printf "${CLR_DIM}监听端口数:${CLR_RESET} %s\n\n" "$total"; ops_ports; echo
 read -r -p "按回车返回..."
@@ -1193,9 +1183,9 @@ ui_mgr(){
 while true; do
 clear; printf "${CLR_BOLD}--- 脚本管理 ---${CLR_RESET}\n\n"
 printf "${CLR_DIM}当前版本:${CLR_RESET} %s (构建于 %s)%s\n\n" "$VPS_VERSION" "$VPS_BUILD_TIME" "$(ops_update_badge)"
-printf "${CLR_CYAN}[1]${CLR_RESET} 升级脚本\n"; printf "${CLR_CYAN}[2]${CLR_RESET} 版本日志\n"; printf "${CLR_CYAN}[3]${CLR_RESET} 卸载脚本\n"
-printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"; read -r -p "请选择: " choice
-case "$choice" in 1) ops_update && read -r -p "按回车返回..." ;; 2) ops_changelog && read -r -p "按回车返回..." ;; 3) sys_uninstall ;; 0|*) return ;; esac
+printf "${CLR_CYAN}[1]${CLR_RESET} 升级脚本\n"; printf "${CLR_CYAN}[2]${CLR_RESET} 卸载脚本\n"; printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"
+read -r -p "请选择: " choice
+case "$choice" in 1) ops_update && read -r -p "按回车返回..." ;; 2) sys_uninstall ;; 0|*) return ;; esac
 done
 }
 docker_is_installed(){ command -v docker >/dev/null 2>&1
@@ -1759,8 +1749,7 @@ case "$choice" in 1) ui_sys ;; 2) ui_net ;; 3) ui_sec ;; 4) ui_ops ;; 5) ui_app_
 done
 }
 case "${1:-}" in
-rm|un|uninstall) sys_uninstall ;; up|update) shift; ops_update "$@" ;; log|changelog) ops_changelog ;; app|apps|market) ui_app_engine ;;
-docker|d) ui_docker ;;
+rm|un|uninstall) sys_uninstall ;; up|update) shift; ops_update "$@" ;; app|apps|market) ui_app_engine ;; docker|d) ui_docker ;;
 *)
 sys_shortcut 2>/dev/null || true
 if [ $# -eq 0 ]; then
