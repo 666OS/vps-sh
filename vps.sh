@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="19a0320"; VPS_BUILD_TIME="2026-11-04 04:13"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="3d83f5e"; VPS_BUILD_TIME="2026-11-04 04:25"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -1741,7 +1741,7 @@ done
 ui(){
 while true; do
 clear; printf "${CLR_BOLD}VPS-SH · Linux 运维控制台${CLR_RESET}\n"
-printf "${CLR_DIM}版本: %s (%s)${CLR_RESET}%s\n\n" "$VPS_VERSION" "$VPS_BUILD_TIME" "$(ops_update_badge)"; sys_snapshot; echo
+printf "${CLR_DIM}版本: %s${CLR_RESET}%s\n\n" "$VPS_VERSION" "$(ops_update_badge)"; sys_snapshot; echo
 printf "${CLR_CYAN}[1]${CLR_RESET} 系统配置\n"; printf "${CLR_CYAN}[2]${CLR_RESET} 网络配置\n"; printf "${CLR_CYAN}[3]${CLR_RESET} 安全防护\n"
 printf "${CLR_CYAN}[4]${CLR_RESET} 运维监控\n"; printf "${CLR_CYAN}[5]${CLR_RESET} 应用市场\n"; printf "${CLR_CYAN}[6]${CLR_RESET} 容器引擎\n\n"
 printf "${CLR_CYAN}[00]${CLR_RESET} 脚本管理\n"; printf "${CLR_DIM}[0]${CLR_RESET}  退出\n\n"; read -r -p "请选择: " choice
