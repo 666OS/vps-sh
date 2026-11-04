@@ -23,7 +23,7 @@ All commands are non-interactive, idempotent, and exit with status 0 on success.
 - `vs sys_swap <mb>`: Create or resize swap memory (e.g. `vs sys_swap 2048`).
 - `vs sys_swap_off`: Disable and delete swap file.
 - `vs sys_tune`: Enable BBR congestion control and kernel network/file performance tuning.
-- `vs sys_clean`: Flush system package caches and journal logs.
+- `vs sys_clean [--aggressive]`: Standardize journald quota (200M / 2 weeks), safely prune caches and non-security logs.
 - `vs sys_update`: Upgrade system packages non-interactively.
 - `vs sys_tz <timezone>`: Set system timezone (default: `Asia/Shanghai`).
 
@@ -43,6 +43,7 @@ All commands are non-interactive, idempotent, and exit with status 0 on success.
 - `vs sec_unlock_root`: Permit root login (allows password and key).
 - `vs sec_root_login <no|prohibit-password|yes>`: Explicitly configure root SSH login policy.
 - `vs sec_key <key_or_url> [user]`: Import SSH public key idempotently (checks for duplicates).
+- `vs sec_clean_key [user]`: Scan and purge legacy on-disk private keys (`id_ed25519_vps`) from server.
 - `vs sec_passwd <user> <password>`: Update user password non-interactively.
 
 ### 4. Native Firewall Management (`fw_*`)
@@ -78,6 +79,7 @@ All commands are non-interactive, idempotent, and exit with status 0 on success.
 - **Docker Port Whitelist Enforcement**: Under whitelist mode, Docker published ports (DNAT via FORWARD) are strictly filtered via `VPS-DOCKER` on `DOCKER-USER`. New published ports require `vs fw_open <port>` to be exposed externally.
 - **Container Network Isolation**: Docker bridge traffic routes through `FORWARD`; binding to `127.0.0.1` ensures true local-only isolation for reverse proxies.
 - **SSH Lockout Immunity**: SSH port is guarded in hardware logic; `fw_close` explicitly rejects closing SSH port. On Ubuntu 22.10+, handles `ssh.socket` listen streams.
+- **Private Key Seclusion**: `sec_gen_key` is strictly interactive-only and forbidden in non-interactive/AI agent environments to prevent leaking private keys into logs or token contexts. Generated private keys exist only in RAM and are wiped immediately upon confirmation; servers never persist private keys.
 - **Fail-Safe Rollback**: `sec_ssh_apply` validates config syntax with `sshd -t` before restarting daemon; auto-reverts on failure.
 - **Non-blocking Execution**: CLI subcommands never call interactive `read` prompts; invalid arguments immediately fail fast. Unattended updates and uninstalls use `-y` (`vs up -y`, `vs rm -y`).
 

@@ -12,13 +12,25 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="380692e"; VPS_BUILD_TIME="2026-11-04 21:54"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="4c1ca8e"; VPS_BUILD_TIME="2026-11-04 22:05"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
 [ -f /etc/vps-sh/feed ] && VPS_APP_FEED="$(head -n 1 /etc/vps-sh/feed | tr -d '\r\n ')"; VPS_CACHE_DIR="/run/vps-sh"
-mkdir -p -m 700 "$VPS_CACHE_DIR" 2>/dev/null || VPS_CACHE_DIR="/tmp"; sys_swap_snapshot(){
-free -m | awk 'NR==3{if($2>0) printf "%s/%s MB (%.1f%%)", $3, $2, $3*100/$2; else print "未启用"}'
+mkdir -p -m 700 "$VPS_CACHE_DIR" 2>/dev/null || VPS_CACHE_DIR="/tmp"; json_str(){ local s="${1:-}"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"; s="${s//[$'\001'-$'\037']/}"; printf '"%s"' "$s"
+}
+json_num(){ [[ "${1:-}" =~ ^-?[0-9]+(\.[0-9]+)?$ ]] && printf '%s' "$1" || printf 'null'
+}
+json_bool(){ [ "${1:-}" = "true" ] && printf 'true' || printf 'false'
+}
+json_arr(){ local o="" x
+for x in "$@"; do
+x="${x#,}"; x="${x%,}"; [ -n "$x" ] || continue; o="${o:+$o,}$(json_str "$x")"
+done
+printf '[%s]' "$o"
+}
+sys_swap_snapshot(){ free -m | awk 'NR==3{if($2>0) printf "%s/%s MB (%.1f%%)", $3, $2, $3*100/$2; else print "未启用"}'
 }
 sys_tz_snapshot(){ local tz=$(timedatectl 2>/dev/null | awk -F': ' '/Time zone/{print $2}'); echo "${tz:-$(date +%Z)}"
 }
@@ -445,41 +457,43 @@ if [ "$u" != "root" ]; then
 chown -R "$u:$u" "$h/.ssh"
 fi
 }
-sec_gen_key(){ require_root; local u="${1:-root}"; local h="/root"
+sec_gen_key(){ require_root
+if [ ! -t 0 ] || [ ! -t 1 ]; then
+printf "${CLR_RED}错误: sec_gen_key 禁止在非交互环境调用 (防私钥泄露至日志/上下文)${CLR_RESET}\n" >&2
+printf "${CLR_DIM}请在本地运行 ssh-keygen，再通过 vs sec_key <公钥> 导入${CLR_RESET}\n" >&2; return 1
+fi
+local u="${1:-root}"; local h="/root"
 if [ "$u" != "root" ]; then
 id "$u" >/dev/null 2>&1 || return 1; h="/home/$u"
 fi
-local priv="$h/.ssh/id_ed25519_vps"; local pub="$h/.ssh/id_ed25519_vps.pub"; mkdir -p "$h/.ssh"; chmod 700 "$h/.ssh"; rm -f "$priv" "$pub"
-ssh-keygen -t ed25519 -N "" -f "$priv" -C "$u@$(hostname)" >/dev/null 2>&1; chmod 600 "$priv"; chmod 644 "$pub"
+local tmp_dir=$(mktemp -d /run/vps-key.XXXXXX 2>/dev/null || mktemp -d /tmp/vps-key.XXXXXX); chmod 700 "$tmp_dir"
+local priv="$tmp_dir/id_ed25519"; local pub="$tmp_dir/id_ed25519.pub"
+ssh-keygen -t ed25519 -N "" -f "$priv" -C "$u@$(hostname)" >/dev/null 2>&1; mkdir -p "$h/.ssh"; chmod 700 "$h/.ssh"
 cat "$pub" >> "$h/.ssh/authorized_keys"; chmod 600 "$h/.ssh/authorized_keys"
 if [ "$u" != "root" ]; then
 chown -R "$u:$u" "$h/.ssh"; chmod 755 "$h" 2>/dev/null || true
 fi
 local port=$(sec_get_port)
 local ip=$(curl -s4m2 https://api.ipify.org 2>/dev/null || curl -s4m2 https://icanhazip.com 2>/dev/null || echo "<服务器IP>"); clear
-printf "\n${CLR_BOLD}--- 密钥对已生成: %s ---${CLR_RESET}\n\n" "$u"; cat "$priv"; echo
-printf "\n${CLR_DIM}登录命令: ssh -i <私钥> -p %s %s@%s${CLR_RESET}\n" "$port" "$u" "$ip"
-printf "${CLR_DIM}服务端已暂存: %s (验证成功后建议清除)${CLR_RESET}\n" "$priv"
+printf "\n${CLR_BOLD}--- SSH 密钥对已生成: %s ---${CLR_RESET}\n\n" "$u"; cat "$priv"; echo
+printf "${CLR_YELLOW}重要: 请立即复制并妥善保存上方私钥内容！${CLR_RESET}\n"
+printf "${CLR_DIM}登录命令: ssh -i <本地私钥路径> -p %s %s@%s${CLR_RESET}\n\n" "$port" "$u" "$ip"; read -r -p "确认已复制并保存私钥? (输入 y 立即清除内存暂存): " _
+rm -rf "$tmp_dir"; printf "${CLR_GREEN}私钥已从服务器完全擦除，公钥已就绪${CLR_RESET}\n"
 }
-sec_show_key(){ require_root; local u="${1:-root}"; local h="/root"
-if [ "$u" != "root" ]; then
-id "$u" >/dev/null 2>&1 || return 1; h="/home/$u"
-fi
-local priv="$h/.ssh/id_ed25519_vps"
-if [ ! -f "$priv" ]; then
-printf "${CLR_YELLOW}未找到用户 %s 的暂存私钥${CLR_RESET}\n" "$u"; return 0
-fi
-local port=$(sec_get_port)
-local ip=$(curl -s4m2 https://api.ipify.org 2>/dev/null || curl -s4m2 https://icanhazip.com 2>/dev/null || echo "<服务器IP>"); clear
-printf "\n${CLR_BOLD}--- 暂存私钥: %s ---${CLR_RESET}\n\n" "$u"; cat "$priv"; echo
-printf "\n${CLR_DIM}登录命令: ssh -i <私钥> -p %s %s@%s${CLR_RESET}\n" "$port" "$u" "$ip"
+sec_show_key(){ printf "${CLR_YELLOW}出于安全考虑，私钥不在服务端持久化存储。若丢失请在本地重新生成并通过 vs sec_key 导入。${CLR_RESET}\n"
 }
-sec_clean_key(){ require_root; local u="${1:-root}"; local h="/root"
-if [ "$u" != "root" ]; then
-id "$u" >/dev/null 2>&1 || return 1; h="/home/$u"
+sec_clean_key(){ require_root; local u="${1:-}"; local count=0
+if [ -n "$u" ]; then
+local h="/root"; [ "$u" != "root" ] && h="/home/$u"; rm -f "$h/.ssh/id_ed25519_vps" "$h/.ssh/id_ed25519_vps.pub" 2>/dev/null || true
+printf "${CLR_GREEN}已清除用户 %s 的暂存私钥${CLR_RESET}\n" "$u"; return 0
 fi
-local priv="$h/.ssh/id_ed25519_vps"; local pub="$h/.ssh/id_ed25519_vps.pub"; rm -f "$priv" "$pub"
-printf "${CLR_GREEN}已清除用户 %s 的暂存私钥${CLR_RESET}\n" "$u"
+local f
+for f in /root/.ssh/id_ed25519_vps /home/*/.ssh/id_ed25519_vps; do
+if [ -f "$f" ]; then
+rm -f "$f" "${f}.pub" 2>/dev/null || true; count=$((count + 1))
+fi
+done
+printf "${CLR_GREEN}已扫描并清除 %s 处服务端残留私钥${CLR_RESET}\n" "$count"
 }
 sec_lock_pwd(){ require_root
 if ! sec_has_keys; then
@@ -595,7 +609,10 @@ root_desc="${CLR_YELLOW}仅限密钥${CLR_RESET}"
 fi
 local sudoers=$(sec_list_sudoers | sort -u | tr '\n' ' ' | sed 's/ $//'); local user_desc="${CLR_DIM}无${CLR_RESET}"
 [ -n "$sudoers" ] && user_desc="${CLR_CYAN}${sudoers} (sudo)${CLR_RESET}"; local fw_desc="${CLR_DIM}未配置${CLR_RESET}"
-if iptables -L VPS-IN -n >/dev/null 2>&1; then
+if [ -f "$VPS_FW_CONF" ]; then
+local FW_MODE FW_PORTS FW_PING FW_DDOS; fw_conf_load || true
+[ "$FW_MODE" = "whitelist" ] && fw_desc="${CLR_GREEN}白名单模式 (默认拦截)${CLR_RESET}" || fw_desc="${CLR_YELLOW}黑名单模式 (默认放行)${CLR_RESET}"
+elif iptables -L VPS-IN -n >/dev/null 2>&1; then
 if iptables -S INPUT 2>/dev/null | grep -q '^-P INPUT DROP'; then
 fw_desc="${CLR_GREEN}白名单模式 (默认拦截)${CLR_RESET}"
 else
@@ -617,6 +634,13 @@ printf "${CLR_BOLD}安全防御:${CLR_RESET} 防火墙: %s | Fail2ban: %s\n" "$f
 if [ -n "$conflict" ]; then
 local cname="UFW"; [ "$conflict" = "firewalld" ] && cname="Firewalld"
 printf "${CLR_RED}${CLR_BOLD}[警告] %s 运行中，与防火墙规则冲突${CLR_RESET}\n" "$cname"
+fi
+local legacy_keys=""
+for f in /root/.ssh/id_ed25519_vps /home/*/.ssh/id_ed25519_vps; do
+[ -f "$f" ] && legacy_keys="${legacy_keys:+$legacy_keys }$f"
+done
+if [ -n "$legacy_keys" ]; then
+printf "${CLR_RED}${CLR_BOLD}[安全警告] 检测到服务端残留私钥: %s (请使用 vs sec_clean_key 清除)${CLR_RESET}\n" "$legacy_keys"
 fi
 }
 sec_f2b_is_installed(){ command -v fail2ban-client >/dev/null 2>&1
@@ -752,9 +776,11 @@ case "$choice" in
 1)
 read -r -p "用户名: " uname; [ -z "$uname" ] && continue; read -r -s -p "密码 (留空仅限密钥): " upass; echo; sec_user_add "$uname" "$upass"
 if ! sec_has_keys "$uname"; then
-echo; read -r -p "是否为 $uname 生成密钥对? (Y/n): " gen_key
-case "$gen_key" in
-n|N) ;; *) sec_gen_key "$uname" ;;
+echo; printf "为 %s 配置 SSH 密钥:\n" "$uname"; printf "${CLR_CYAN}[1]${CLR_RESET} 导入公钥 (推荐)\n"; printf "${CLR_CYAN}[2]${CLR_RESET} 临时生成密钥对\n"
+printf "${CLR_DIM}[回车] 暂不配置${CLR_RESET}\n"; read -r -p "请选择: " key_choice
+case "$key_choice" in
+1)
+read -r -p "公钥内容 (文本或 GitHub .keys 链接): " key; [ -n "$key" ] && sec_key "$key" "$uname"; ;; 2) sec_gen_key "$uname" ;; *) ;;
 esac
 fi
 ;;
@@ -772,19 +798,17 @@ ui_sec_user(){ ui_sec_account
 }
 ui_sec_key(){ local target_user="${1:-}"
 while true; do
-clear; printf "${CLR_BOLD}--- 密钥管理 ---${CLR_RESET}\n\n"; printf "${CLR_CYAN}[1]${CLR_RESET} 生成密钥对\n"
-printf "${CLR_CYAN}[2]${CLR_RESET} 查看暂存私钥\n"; printf "${CLR_CYAN}[3]${CLR_RESET} 清除暂存私钥\n"; printf "${CLR_CYAN}[4]${CLR_RESET} 导入公钥\n"
+clear; printf "${CLR_BOLD}--- 密钥管理 ---${CLR_RESET}\n\n"; printf "${CLR_CYAN}[1]${CLR_RESET} 导入公钥 (推荐: 客户端生成后导入/GitHub .keys 链接)\n"
+printf "${CLR_CYAN}[2]${CLR_RESET} 临时生成密钥对 (内存即时生成，服务端不留私钥)\n"; printf "${CLR_CYAN}[3]${CLR_RESET} 清除服务端残留私钥\n"
 printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"; read -r -p "请选择: " choice
 case "$choice" in
 1)
-local u="$target_user"; [ -z "$u" ] && read -r -p "用户名 (默认 root): " u; sec_gen_key "${u:-root}"; ;;
-2)
-local u="$target_user"; [ -z "$u" ] && read -r -p "用户名 (默认 root): " u; sec_show_key "${u:-root}"; ;;
-3)
-local u="$target_user"; [ -z "$u" ] && read -r -p "用户名 (默认 root): " u; sec_clean_key "${u:-root}"; ;;
-4)
 local u="$target_user"; [ -z "$u" ] && read -r -p "用户名 (默认 root): " u; read -r -p "公钥内容 (文本或 GitHub .keys 链接): " key
-[ -n "$key" ] && sec_key "$key" "${u:-root}"; ;; 0|*) return ;;
+[ -n "$key" ] && sec_key "$key" "${u:-root}"; ;;
+2)
+local u="$target_user"; [ -z "$u" ] && read -r -p "用户名 (默认 root): " u; sec_gen_key "${u:-root}"; ;;
+3)
+local u="$target_user"; [ -z "$u" ] && read -r -p "用户名 (直接回车扫描清除所有用户): " u; sec_clean_key "$u"; ;; 0|*) return ;;
 esac
 read -r -p "按回车返回..."
 done
@@ -1285,12 +1309,26 @@ printf "${CLR_BOLD}[系统任务 (/etc/cron.d)]${CLR_RESET}\n"; echo "$sys_files
 fi
 fi
 }
-ops_clean(){ require_root; local before=$(journalctl --disk-usage 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)?[KMGTPBkmgtpb]' | head -n 1)
-[ -z "$before" ] && before=$(du -sh /var/log 2>/dev/null | awk '{print $1}'); journalctl --rotate 2>/dev/null || true
-journalctl --vacuum-time=1d 2>/dev/null || true; journalctl --vacuum-size=10M 2>/dev/null || true
+ops_clean(){ require_root; local aggressive=0
+if [ "${1:-}" = "--aggressive" ] || [ "${1:-}" = "-a" ]; then
+aggressive=1
+fi
+local before=$(journalctl --disk-usage 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)?[KMGTPBkmgtpb]' | head -n 1)
+[ -z "$before" ] && before=$(du -sh /var/log 2>/dev/null | awk '{print $1}'); mkdir -p /etc/systemd/journald.conf.d
+local j_conf="/etc/systemd/journald.conf.d/99-vps.conf"; local want=$'[Journal]\nSystemMaxUse=200M\nMaxRetentionSec=2week'
+if [ "$(cat "$j_conf" 2>/dev/null)" != "$want" ]; then
+printf '%s\n' "$want" > "$j_conf"; systemctl restart systemd-journald 2>/dev/null || true
+fi
+if [ "$aggressive" -eq 1 ]; then
+journalctl --rotate 2>/dev/null || true; journalctl --vacuum-size=50M 2>/dev/null || true
 find /var/log -type f \( -name "*.gz" -o -name "*.[0-9]" -o -name "*.old" \) -delete 2>/dev/null || true
+else
+journalctl --vacuum-size=200M 2>/dev/null || true
+find /var/log -type f \( -name "*.gz" -o -name "*.[0-9]" -o -name "*.old" \) -mtime +7 \
+! -name 'auth.log*' ! -name 'fail2ban.log*' ! -name 'btmp*' ! -name 'wtmp*' -delete 2>/dev/null || true
+fi
 apt-get clean -y 2>/dev/null || true; rm -rf /var/cache/apt/archives/*.deb 2>/dev/null || true
-find /tmp /var/tmp -type f -atime +1 -delete 2>/dev/null || true
+command -v systemd-tmpfiles >/dev/null 2>&1 && systemd-tmpfiles --clean 2>/dev/null || true
 local after=$(journalctl --disk-usage 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)?[KMGTPBkmgtpb]' | head -n 1)
 [ -z "$after" ] && after=$(du -sh /var/log 2>/dev/null | awk '{print $1}')
 printf "${CLR_GREEN}已清理系统日志与缓存 (${before:-0B} -> ${after:-0B})${CLR_RESET}\n"
@@ -1369,12 +1407,15 @@ ui_ops_clean(){ clear; local j_size=$(journalctl --disk-usage 2>/dev/null | grep
 [ -z "$j_size" ] && j_size=$(du -sh /var/log 2>/dev/null | awk '{print $1}')
 local apt_size=$(du -sh /var/cache/apt/archives 2>/dev/null | awk '{print $1}')
 local tmp_size=$(du -sh /tmp 2>/dev/null | awk '{print $1}'); printf "${CLR_BOLD}--- 清理系统日志 ---${CLR_RESET}\n"
-printf "${CLR_DIM}系统日志:${CLR_RESET} %s (保留 10M)\n" "${j_size:-0B}"; printf "${CLR_DIM}包缓存:${CLR_RESET}   %s\n" "${apt_size:-0B}"
-printf "${CLR_DIM}临时文件:${CLR_RESET} %s\n\n" "${tmp_size:-0B}"; read -r -p "确认清理? (y/N, 回车取消): " confirm
-case "$confirm" in
-[yY][eE][sS]|[yY])
+printf "${CLR_DIM}系统日志:${CLR_RESET} %s (配额上限: 200M, 保留2周)\n" "${j_size:-0B}"; printf "${CLR_DIM}包缓存:${CLR_RESET}   %s\n" "${apt_size:-0B}"
+printf "${CLR_DIM}临时文件:${CLR_RESET} %s\n\n" "${tmp_size:-0B}"; printf "${CLR_CYAN}[1]${CLR_RESET} 标准清理 (设 200M 上限，保留安全审计日志)\n"
+printf "${CLR_CYAN}[2]${CLR_RESET} 深度清理 (压缩至 50M，清空旧归档)\n"; printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"; read -r -p "请选择: " choice
+case "$choice" in
+1)
 echo; ops_clean; echo; ;;
-*)
+2)
+echo; ops_clean --aggressive; echo; ;;
+0|*)
 return 0; ;;
 esac
 read -r -p "按回车返回..."
@@ -1548,16 +1589,38 @@ if [ -d "/opt/vps-sh/apps" ]; then
 installed_apps=$(find /opt/vps-sh/apps -mindepth 1 -maxdepth 1 -type d -exec test -f '{}/compose.yaml' -o -f '{}/docker-compose.yml' ';' -exec basename '{}' ';' 2>/dev/null | tr '\n' ' ' | sed 's/ $//')
 fi
 if [ "$mode" = "--json" ] || [ "$mode" = "-j" ] || [ "$mode" = "json" ]; then
-local ports_json="[]"
-if [ -n "$fw_ports" ]; then
-ports_json="[$(sed 's/[^, ]*/"&"/g' <<< "$fw_ports")]"
-fi
-local apps_json="[]"
-if [ -n "$installed_apps" ]; then
-apps_json="[$(sed 's/[^ ]*/"&"/g; s/ /, /g' <<< "$installed_apps")]"
-fi
-printf '{"sys":{"os":"%s","kernel":"%s","arch":"%s","cores":%s,"load":"%s","mem_used_mb":%d,"mem_total_mb":%d,"mem_pct":%s,"swap_used_mb":%d,"swap_total_mb":%d,"swap_pct":%s,"disk":"%s"},"net":{"ipv4":"%s","ipv6":"%s","bbr":"%s"},"sec":{"ssh_port":%s,"pwd_auth":"%s","root_login":"%s","f2b":{"installed":%s,"active":%s,"banned":%d}},"fw":{"mode":"%s","open_ports":%s,"ping_allow":%s,"ddos_protect":%s},"docker":{"installed":%s,"active":%s,"version":"%s","running":%s,"images":%s},"apps":{"installed":%s,"catalog":"https://raw.githubusercontent.com/666OS/vps-apps/main/llms.txt"}}\n' \
-"$os" "$kernel" "$arch" "$cores" "$load" "$m_u" "$m_t" "$m_p" "$s_u" "$s_t" "$s_p" "$disk" "$ipv4" "$ipv6" "$bbr" "$ssh_port" "$pwd_auth" "$root_login" "$f2b_installed" "$f2b_active" "${f2b_banned:-0}" "$fw_mode" "$ports_json" "$ping_allow" "$ddos_protect" "$docker_installed" "$docker_active" "${d_ver:-}" "${d_run:-0}" "${d_img:-0}" "$apps_json"
+printf '{"schema":1,"sys":{"os":%s,"kernel":%s,"arch":%s,"cores":%s,"load":%s,"mem_used_mb":%s,"mem_total_mb":%s,"mem_pct":%s,"swap_used_mb":%s,"swap_total_mb":%s,"swap_pct":%s,"disk":%s},"net":{"ipv4":%s,"ipv6":%s,"bbr":%s},"sec":{"ssh_port":%s,"pwd_auth":%s,"root_login":%s,"f2b":{"installed":%s,"active":%s,"banned":%s}},"fw":{"mode":%s,"open_ports":%s,"ping_allow":%s,"ddos_protect":%s},"docker":{"installed":%s,"active":%s,"version":%s,"running":%s,"images":%s},"apps":{"installed":%s,"catalog":"https://raw.githubusercontent.com/666OS/vps-apps/main/llms.txt"}}\n' \
+"$(json_str "$os")" \
+"$(json_str "$kernel")" \
+"$(json_str "$arch")" \
+"$(json_num "$cores")" \
+"$(json_str "$load")" \
+"$(json_num "$m_u")" \
+"$(json_num "$m_t")" \
+"$(json_num "$m_p")" \
+"$(json_num "$s_u")" \
+"$(json_num "$s_t")" \
+"$(json_num "$s_p")" \
+"$(json_str "$disk")" \
+"$(json_str "$ipv4")" \
+"$(json_str "$ipv6")" \
+"$(json_str "$bbr")" \
+"$(json_num "$ssh_port")" \
+"$(json_str "$pwd_auth")" \
+"$(json_str "$root_login")" \
+"$(json_bool "$f2b_installed")" \
+"$(json_bool "$f2b_active")" \
+"$(json_num "${f2b_banned:-0}")" \
+"$(json_str "$fw_mode")" \
+"$(json_arr $fw_ports)" \
+"$(json_bool "$ping_allow")" \
+"$(json_bool "$ddos_protect")" \
+"$(json_bool "$docker_installed")" \
+"$(json_bool "$docker_active")" \
+"$(json_str "$d_ver")" \
+"$(json_num "${d_run:-0}")" \
+"$(json_num "${d_img:-0}")" \
+"$(json_arr $installed_apps)"
 else
 local f2b_disp="not installed"; $f2b_installed && f2b_disp="stopped"; $f2b_active && f2b_disp="active (banned: ${f2b_banned:-0})"
 local fw_disp="$fw_mode"; [ "$fw_mode" = "whitelist" ] && fw_disp="whitelist (drop inbound)"
@@ -1575,7 +1638,7 @@ printf "${CLR_BOLD}=== VPS-SH Native CLI Operations Manifest ===${CLR_RESET}\n"
 printf "${CLR_DIM}[Directive: Prefer native 'vs' CLI primitives over raw system scripts]${CLR_RESET}\n"
 printf " - System: vs sys_swap <mb> | vs sys_tune | vs sys_clean\n"
 printf " - Network: vs net_dns_foreign | vs net_dns_china | vs net_prio_v4 | vs net_prio_v6\n"
-printf " - Security: vs sec_port <port> | vs sec_lock_pwd | vs sec_unlock_pwd | vs sec_lock_root | vs sec_root_keyonly | vs sec_unlock_root | vs sec_key <key>\n"
+printf " - Security: vs sec_port <port> | vs sec_lock_pwd | vs sec_unlock_pwd | vs sec_lock_root | vs sec_root_keyonly | vs sec_unlock_root | vs sec_key <key> | vs sec_clean_key\n"
 printf " - Firewall: vs fw_open <port...> | vs fw_close <port...> | vs fw_ban_ip <ip> | vs fw_unban_ip <ip> | vs fw_allow_ip <ip> | vs fw_open_all | vs fw_close_all\n"
 printf " - Docker & Apps: vs docker_install | vs docker_cleanup | vs app_install <id> [port] | vs app_update <id>\n"
 printf " - Catalog: https://raw.githubusercontent.com/666OS/vps-apps/main/llms.txt\n"
@@ -1656,13 +1719,9 @@ else
 rm -f "$tmp"
 fi
 else
-local json_list=""
-for m in "${mirrors[@]}"; do
-[ -n "$json_list" ] && json_list="$json_list, "; json_list="$json_list\"$m\""
-done
         cat > /etc/docker/daemon.json << EOF
 {
-  "registry-mirrors": [$json_list]
+  "registry-mirrors": $(json_arr "${mirrors[@]}")
 }
 EOF
 fi
