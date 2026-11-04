@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="c46ed5b"; VPS_BUILD_TIME="2026-11-04 19:30"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="3a66f07"; VPS_BUILD_TIME="2026-11-04 19:54"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -65,12 +65,12 @@ printf "${CLR_BOLD}网络:${CLR_RESET}     IPv4: %s\n" "$ipv4"; printf "        
 sys_update(){ require_root; DEBIAN_FRONTEND=noninteractive apt-get update -y; DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
 DEBIAN_FRONTEND=noninteractive apt-get autoremove -y; DEBIAN_FRONTEND=noninteractive apt-get clean -y
 }
-sys_swap(){ require_root; local mb="${1:-2048}"; swapoff -a 2>/dev/null || true; rm -f /swapfile
+sys_swap(){ require_root; local mb="${1:-2048}"; [ -f /swapfile ] && swapoff /swapfile 2>/dev/null || true; rm -f /swapfile
 fallocate -l "${mb}M" /swapfile || dd if=/dev/zero of=/swapfile bs=1M count="$mb"; chmod 600 /swapfile; mkswap /swapfile; swapon /swapfile
 sed -i '/\/swapfile/d' /etc/fstab; echo "/swapfile swap swap defaults 0 0" >> /etc/fstab; sysctl -w vm.swappiness=10
 echo "vm.swappiness=10" > /etc/sysctl.d/99-swap.conf
 }
-sys_swap_off(){ require_root; swapoff -a 2>/dev/null || true; rm -f /swapfile; sed -i '/\/swapfile/d' /etc/fstab
+sys_swap_off(){ require_root; [ -f /swapfile ] && swapoff /swapfile 2>/dev/null || true; rm -f /swapfile; sed -i '/\/swapfile/d' /etc/fstab
 rm -f /etc/sysctl.d/99-swap.conf
 }
 sys_tz(){ require_root; local tz="${1:-Asia/Shanghai}"; timedatectl set-timezone "$tz"
@@ -107,16 +107,23 @@ sys_tune(){ require_root; modprobe tcp_bbr 2>/dev/null || true
     cat > /etc/security/limits.d/99-nofile.conf << 'EOF'
 * soft nofile 65535
 * hard nofile 65535
+root soft nofile 65535
+root hard nofile 65535
 EOF
+mkdir -p /etc/systemd/system.conf.d
+    cat > /etc/systemd/system.conf.d/99-nofile.conf << 'EOF'
+[Manager]
+DefaultLimitNOFILE=65535:65535
+EOF
+systemctl daemon-reexec 2>/dev/null || true
     cat > /etc/sysctl.d/99-sys-tune.conf << 'EOF'
-fs.file-max = 65535
 vm.swappiness = 10
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 EOF
 sysctl --system; sys_hosts_heal
 }
-sys_shortcut(){ [ "$(id -u)" -eq 0 ] || return 0; local registered=0
+sys_clean(){ ops_clean "$@"; }; sys_shortcut(){ [ "$(id -u)" -eq 0 ] || return 0; local registered=0
 if [ -f "$0" ] && [ "$0" != "bash" ] && [ "$0" != "sh" ]; then
 local src=$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")
 if [ "$src" != "/usr/local/bin/vs" ]; then
@@ -127,9 +134,15 @@ fi
 chmod 755 /usr/local/bin/vs 2>/dev/null || true; [ -L /usr/bin/vs ] || ln -sf /usr/local/bin/vs /usr/bin/vs 2>/dev/null || true
 [ "$registered" -eq 1 ] && echo -e "${CLR_CYAN}已注册全局命令: vs${CLR_RESET}" >&2 || true
 }
-sys_uninstall(){ require_root; read -r -p "确认卸载 vs? (y/N): " confirm
+sys_uninstall(){ require_root; local confirm="${1:-}"
+if [ "$confirm" != "-y" ] && [ "$confirm" != "--yes" ]; then
+if [ ! -t 0 ]; then
+printf "${CLR_RED}错误: 非交互环境请使用: vs rm -y${CLR_RESET}\n" >&2; return 1
+fi
+read -r -p "确认卸载 vs? (y/N): " confirm
+fi
 case "$confirm" in
-[yY][eE][sS]|[yY])
+[yY][eE][sS]|[yY]|-y|--yes)
 local self=$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")
 systemctl disable --now vps-firewall 2>/dev/null || true
 rm -f /etc/systemd/system/vps-firewall.service /usr/local/bin/vs /usr/bin/vs 2>/dev/null || true
@@ -236,9 +249,9 @@ done
 }
 net_dns_foreign(){ net_dns_set "1.1.1.1" "8.8.8.8" "2606:4700:4700::1111" "2001:4860:4860::8888"
 }
-net_dns_domestic(){ net_dns_set "223.5.5.5" "183.60.83.19" "2400:3200::1" "2400:da00::6666"
+net_dns_domestic(){ net_dns_set "223.5.5.5" "119.29.29.29" "2400:3200::1" "2400:da00::6666"
 }
-net_dns_restore(){ require_root; chattr -i /etc/resolv.conf 2>/dev/null || true
+net_dns_china(){ net_dns_domestic "$@"; }; net_dns_restore(){ require_root; chattr -i /etc/resolv.conf 2>/dev/null || true
 if [ -f /run/systemd/resolve/resolv.conf ]; then
 ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
 else
@@ -255,10 +268,10 @@ fi
 net_v4_first(){ require_root
 sed -i -E 's/^#?precedence ::ffff:0:0\/96  100/precedence ::ffff:0:0\/96  100/' /etc/gai.conf 2>/dev/null || echo "precedence ::ffff:0:0/96  100" >> /etc/gai.conf
 }
-net_v6_first(){ require_root
+net_prio_v4(){ net_v4_first "$@"; }; net_v6_first(){ require_root
 sed -i -E 's/^precedence ::ffff:0:0\/96  100/#precedence ::ffff:0:0\/96  100/' /etc/gai.conf 2>/dev/null || true
 }
-net_trace(){
+net_prio_v6(){ net_v6_first "$@"; }; net_trace(){
 if ! command -v nexttrace >/dev/null 2>&1; then
 printf "${CLR_CYAN}正在下载安装 NextTrace...${CLR_RESET}\n"; curl -fsSLm 15 https://nxtrace.org/nt | bash || {
 printf "${CLR_RED}错误: 安装 NextTrace 失败${CLR_RESET}\n" >&2; return 1
@@ -271,7 +284,7 @@ else
 nexttrace --fast-trace --tcp
 fi
 }
-ui_dns(){
+net_test(){ net_trace "$@"; }; ui_dns(){
 while true; do
 clear; printf "${CLR_BOLD}--- DNS 配置 ---${CLR_RESET}\n"; printf "${CLR_DIM}当前 DNS:${CLR_RESET}\n"; net_dns_snapshot; echo
 printf "${CLR_CYAN}[1]${CLR_RESET} 国外双栈 (Cloudflare / Google)\n"; printf "${CLR_CYAN}[2]${CLR_RESET} 国内双栈 (Aliyun / DNSPod)\n"
@@ -357,6 +370,15 @@ rm -f "$conf"
 fi
 printf "${CLR_RED}错误: SSH 配置语法校验失败，已自动回滚${CLR_RESET}\n" >&2; return 1
 fi
+if systemctl is-active --quiet ssh.socket 2>/dev/null || systemctl is-enabled --quiet ssh.socket 2>/dev/null; then
+mkdir -p /etc/systemd/system/ssh.socket.d
+        cat > /etc/systemd/system/ssh.socket.d/listen.conf << EOF
+[Socket]
+ListenStream=
+ListenStream=$port
+EOF
+systemctl daemon-reload 2>/dev/null || true; systemctl restart ssh.socket 2>/dev/null || true
+fi
 systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
 }
 sec_port(){ require_root; local port="$1"
@@ -365,6 +387,7 @@ printf "${CLR_RED}错误: 端口无效 (1-65535)${CLR_RESET}\n" >&2; return 1
 fi
 sec_ssh_apply "$port" "$(sec_get_pwd)" "$(sec_get_root_login)" || return 1
 iptables -C VPS-IN -p tcp --dport "$port" -j ACCEPT 2>/dev/null || iptables -A VPS-IN -p tcp --dport "$port" -j ACCEPT 2>/dev/null || true
+command -v ip6tables >/dev/null 2>&1 && { ip6tables -C VPS-IN -p tcp --dport "$port" -j ACCEPT 2>/dev/null || ip6tables -A VPS-IN -p tcp --dport "$port" -j ACCEPT 2>/dev/null || true; }
 fw_save 2>/dev/null || true; [ -d /etc/fail2ban/jail.d ] && sec_f2b_sync 2>/dev/null || true
 }
 sec_port_restore(){ sec_port 22
@@ -411,11 +434,16 @@ fi
 if ! ssh-keygen -l -f "$tmp" >/dev/null 2>&1; then
 rm -f "$tmp"; printf "${CLR_RED}错误: 公钥格式无效${CLR_RESET}\n" >&2; return 1
 fi
-mkdir -p "$h/.ssh"; chmod 700 "$h/.ssh"; cat "$tmp" >> "$h/.ssh/authorized_keys"; rm -f "$tmp"; chmod 600 "$h/.ssh/authorized_keys"
+mkdir -p "$h/.ssh"; chmod 700 "$h/.ssh"; touch "$h/.ssh/authorized_keys"; local clean_key=$(awk '{print $1" "$2}' "$tmp")
+if [ -n "$clean_key" ] && grep -Fq "$clean_key" "$h/.ssh/authorized_keys" 2>/dev/null; then
+printf "${CLR_DIM}公钥已存在于用户 %s，跳过追加${CLR_RESET}\n" "$u"
+else
+cat "$tmp" >> "$h/.ssh/authorized_keys"; printf "${CLR_GREEN}已导入用户 %s 公钥${CLR_RESET}\n" "$u"
+fi
+rm -f "$tmp"; chmod 600 "$h/.ssh/authorized_keys"
 if [ "$u" != "root" ]; then
 chown -R "$u:$u" "$h/.ssh"
 fi
-printf "${CLR_GREEN}已导入用户 %s 公钥${CLR_RESET}\n" "$u"
 }
 sec_gen_key(){ require_root; local u="${1:-root}"; local h="/root"
 if [ "$u" != "root" ]; then
@@ -483,8 +511,8 @@ fi
 fi
 sec_ssh_apply "$(sec_get_port)" "$(sec_get_pwd)" "$mode"
 }
-sec_user_list(){ local root_key="否"; [ -s /root/.ssh/authorized_keys ] && root_key="是"
-printf "%-16s | UID: %-5s | 权限: %-8s | 拥有密钥: %s\n" "root" "0" "特权" "$root_key"
+sec_lock_root(){ sec_root_login "no"; }; sec_unlock_root(){ sec_root_login "yes"; }; sec_user_list(){ local root_key="否"
+[ -s /root/.ssh/authorized_keys ] && root_key="是"; printf "%-16s | UID: %-5s | 权限: %-8s | 拥有密钥: %s\n" "root" "0" "特权" "$root_key"
 awk -F: '$3 >= 1000 && $3 < 60000 {printf "%s %s\n", $1, $3}' /etc/passwd | while read -r u uid; do local perm="普通"
 if [ -f "/etc/sudoers.d/90-$u" ]; then
 perm="sudo (免密)"; elif id -nG "$u" 2>/dev/null | grep -Eq '\b(sudo|wheel)\b'; then perm="sudo (密码)"
@@ -493,9 +521,15 @@ local has_key="否"; [ -s "/home/$u/.ssh/authorized_keys" ] && has_key="是"
 printf "%-16s | UID: %-5s | 权限: %-8s | 拥有密钥: %s\n" "$u" "$uid" "$perm" "$has_key"
 done
 }
-sec_passwd(){ require_root; local u="${1:-root}"
+sec_passwd(){ require_root; local u="${1:-root}"; local pwd="${2:-}"
 if ! id "$u" >/dev/null 2>&1; then
 printf "${CLR_RED}错误: 用户 %s 不存在${CLR_RESET}\n" "$u" >&2; return 1
+fi
+if [ -n "$pwd" ]; then
+echo "$u:$pwd" | chpasswd; printf "${CLR_GREEN}已更新用户 %s 密码${CLR_RESET}\n" "$u"; return 0
+fi
+if [ ! -t 0 ]; then
+printf "${CLR_RED}错误: 非交互模式下必须提供密码: vs sec_passwd <user> <password>${CLR_RESET}\n" >&2; return 1
 fi
 read -r -s -p "输入用户 $u 的新密码: " p1; echo; read -r -s -p "再次确认新密码: " p2; echo
 if [ "$p1" != "$p2" ] || [ -z "$p1" ]; then
@@ -834,8 +868,16 @@ iptables -w 2 -C VPS-IN -m set --match-set vps_blacklist src -j DROP 2>/dev/null
 iptables -w 2 -C VPS-IN -m set --match-set vps_whitelist src -j ACCEPT 2>/dev/null || iptables -w 2 -A VPS-IN -m set --match-set vps_whitelist src -j ACCEPT
 local ssh_port=$(sec_get_port)
 iptables -w 2 -C VPS-IN -p tcp --dport "$ssh_port" -j ACCEPT 2>/dev/null || iptables -w 2 -A VPS-IN -p tcp --dport "$ssh_port" -j ACCEPT
+if command -v ip6tables >/dev/null 2>&1; then
+ip6tables -w 2 -N VPS-IN 2>/dev/null || true
+ip6tables -w 2 -C INPUT -j VPS-IN 2>/dev/null || ip6tables -w 2 -I INPUT 1 -j VPS-IN 2>/dev/null || true
+ip6tables -w 2 -C VPS-IN -i lo -j ACCEPT 2>/dev/null || ip6tables -w 2 -A VPS-IN -i lo -j ACCEPT 2>/dev/null || true
+ip6tables -w 2 -C VPS-IN -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || ip6tables -w 2 -A VPS-IN -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
+ip6tables -w 2 -C VPS-IN -p tcp --dport "$ssh_port" -j ACCEPT 2>/dev/null || ip6tables -w 2 -A VPS-IN -p tcp --dport "$ssh_port" -j ACCEPT 2>/dev/null || true
+fi
 }
 fw_save(){ require_root; mkdir -p /etc/iptables; iptables-save > /etc/iptables/rules.v4
+command -v ip6tables-save >/dev/null 2>&1 && ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true
 ipset save > /etc/iptables/ipset.rules 2>/dev/null || true
 if [ ! -f /etc/systemd/system/vps-firewall.service ]; then
         cat > /etc/systemd/system/vps-firewall.service << 'EOF'
@@ -845,7 +887,7 @@ Before=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c 'which ipset >/dev/null && [ -f /etc/iptables/ipset.rules ] && ipset restore -exist < /etc/iptables/ipset.rules 2>/dev/null || true; [ -f /etc/iptables/rules.v4 ] && iptables-restore < /etc/iptables/rules.v4 2>/dev/null || true'
+ExecStart=/bin/sh -c 'which ipset >/dev/null && [ -f /etc/iptables/ipset.rules ] && ipset restore -exist < /etc/iptables/ipset.rules 2>/dev/null || true; [ -f /etc/iptables/rules.v4 ] && iptables-restore < /etc/iptables/rules.v4 2>/dev/null || true; [ -f /etc/iptables/rules.v6 ] && which ip6tables-restore >/dev/null && ip6tables-restore < /etc/iptables/rules.v6 2>/dev/null || true'
 RemainAfterExit=yes
 
 [Install]
@@ -863,7 +905,7 @@ echo "accept"
 fi
 }
 fw_get_ddos(){
-if iptables -w 2 -C VPS-IN -p tcp --syn -j DROP 2>/dev/null; then
+if iptables -w 2 -S VPS-IN 2>/dev/null | grep -qE 'hashlimit-name vps_syn.*-j DROP|-p tcp --syn.*-j DROP'; then
 echo "on"
 else
 echo "off"
@@ -930,7 +972,12 @@ if [[ ! "$p" =~ ^[0-9]+(:[0-9]+)?$ ]]; then
 printf "${CLR_RED}错误: 端口格式无效 (%s)${CLR_RESET}\n" "$p" >&2; continue
 fi
 iptables -w 2 -C VPS-IN -p tcp --dport "$p" -j ACCEPT 2>/dev/null || iptables -w 2 -A VPS-IN -p tcp --dport "$p" -j ACCEPT
-iptables -w 2 -C VPS-IN -p udp --dport "$p" -j ACCEPT 2>/dev/null || iptables -w 2 -A VPS-IN -p udp --dport "$p" -j ACCEPT; added+=("$p")
+iptables -w 2 -C VPS-IN -p udp --dport "$p" -j ACCEPT 2>/dev/null || iptables -w 2 -A VPS-IN -p udp --dport "$p" -j ACCEPT
+if command -v ip6tables >/dev/null 2>&1; then
+ip6tables -w 2 -C VPS-IN -p tcp --dport "$p" -j ACCEPT 2>/dev/null || ip6tables -w 2 -A VPS-IN -p tcp --dport "$p" -j ACCEPT 2>/dev/null || true
+ip6tables -w 2 -C VPS-IN -p udp --dport "$p" -j ACCEPT 2>/dev/null || ip6tables -w 2 -A VPS-IN -p udp --dport "$p" -j ACCEPT 2>/dev/null || true
+fi
+added+=("$p")
 done
 fw_save
 if [ ${#added[@]} -gt 0 ]; then
@@ -956,6 +1003,7 @@ local lines=$( (iptables -S 2>/dev/null || true) | awk -v target="$p" '
 if [ -n "$lines" ]; then
 while read -r line; do
 [ -n "$line" ] && iptables -w 2 -D ${line#-A } 2>/dev/null || true
+[ -n "$line" ] && command -v ip6tables >/dev/null 2>&1 && ip6tables -w 2 -D ${line#-A } 2>/dev/null || true
 done <<< "$lines"
 closed+=("$p")
 fi
@@ -967,9 +1015,13 @@ else
 printf "${CLR_YELLOW}未找到指定开放端口${CLR_RESET}\n"
 fi
 }
-fw_open_all(){ require_root; iptables -w 2 -P INPUT ACCEPT; fw_save; printf "${CLR_GREEN}已切换为黑名单模式 (默认放行)${CLR_RESET}\n"
+fw_open_all(){ require_root; iptables -w 2 -P INPUT ACCEPT
+command -v ip6tables >/dev/null 2>&1 && ip6tables -w 2 -P INPUT ACCEPT 2>/dev/null || true; fw_save
+printf "${CLR_GREEN}已切换为黑名单模式 (默认放行)${CLR_RESET}\n"
 }
-fw_close_all(){ require_root; fw_init; iptables -w 2 -P INPUT DROP; fw_save; printf "${CLR_GREEN}已切换为白名单模式 (默认拦截)${CLR_RESET}\n"
+fw_close_all(){ require_root; fw_init; iptables -w 2 -P INPUT DROP
+command -v ip6tables >/dev/null 2>&1 && ip6tables -w 2 -P INPUT DROP 2>/dev/null || true; fw_save
+printf "${CLR_GREEN}已切换为白名单模式 (默认拦截)${CLR_RESET}\n"
 }
 fw_ban_ip(){ require_root; fw_init; local added=()
 for ip in "$@"; do
@@ -1014,22 +1066,30 @@ if [ "$state" = "toggle" ]; then
 [ "$(fw_get_ddos)" = "on" ] && state="off" || state="on"
 fi
 if [ "$state" = "on" ]; then
-iptables -w 2 -C VPS-IN -p tcp --syn -m limit --limit 500/s --limit-burst 100 -j ACCEPT 2>/dev/null || iptables -w 2 -I VPS-IN 1 -p tcp --syn -m limit --limit 500/s --limit-burst 100 -j ACCEPT
-iptables -w 2 -C VPS-IN -p tcp --syn -j DROP 2>/dev/null || iptables -w 2 -I VPS-IN 2 -p tcp --syn -j DROP
-iptables -w 2 -C VPS-IN -p udp -m limit --limit 3000/s --limit-burst 500 -j ACCEPT 2>/dev/null || iptables -w 2 -I VPS-IN 3 -p udp -m limit --limit 3000/s --limit-burst 500 -j ACCEPT
-iptables -w 2 -C VPS-IN -p udp -j DROP 2>/dev/null || iptables -w 2 -I VPS-IN 4 -p udp -j DROP
+iptables -w 2 -D VPS-IN -p tcp --syn -m limit --limit 500/s --limit-burst 100 -j ACCEPT 2>/dev/null || true
+iptables -w 2 -D VPS-IN -p udp -m limit --limit 3000/s --limit-burst 500 -j ACCEPT 2>/dev/null || true
+iptables -w 2 -C VPS-IN -p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn -j DROP 2>/dev/null || \
+iptables -w 2 -I VPS-IN 1 -p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn -j DROP
+iptables -w 2 -C VPS-IN -p udp -m hashlimit --hashlimit-above 3000/s --hashlimit-burst 500 --hashlimit-mode srcip --hashlimit-name vps_udp -j DROP 2>/dev/null || \
+iptables -w 2 -I VPS-IN 2 -p udp -m hashlimit --hashlimit-above 3000/s --hashlimit-burst 500 --hashlimit-mode srcip --hashlimit-name vps_udp -j DROP
 if iptables -w 2 -L DOCKER-USER -n >/dev/null 2>&1; then
-iptables -w 2 -C DOCKER-USER -p tcp --syn -m limit --limit 500/s --limit-burst 100 -j ACCEPT 2>/dev/null || iptables -w 2 -I DOCKER-USER 1 -p tcp --syn -m limit --limit 500/s --limit-burst 100 -j ACCEPT
-iptables -w 2 -C DOCKER-USER -p tcp --syn -j DROP 2>/dev/null || iptables -w 2 -I DOCKER-USER 2 -p tcp --syn -j DROP
-iptables -w 2 -C DOCKER-USER -p udp -m limit --limit 3000/s --limit-burst 500 -j ACCEPT 2>/dev/null || iptables -w 2 -I DOCKER-USER 3 -p udp -m limit --limit 3000/s --limit-burst 500 -j ACCEPT
-iptables -w 2 -C DOCKER-USER -p udp -j DROP 2>/dev/null || iptables -w 2 -I DOCKER-USER 4 -p udp -j DROP
+iptables -w 2 -D DOCKER-USER -p tcp --syn -m limit --limit 500/s --limit-burst 100 -j ACCEPT 2>/dev/null || true
+iptables -w 2 -D DOCKER-USER -p udp -m limit --limit 3000/s --limit-burst 500 -j ACCEPT 2>/dev/null || true
+iptables -w 2 -C DOCKER-USER -p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn -j DROP 2>/dev/null || \
+iptables -w 2 -I DOCKER-USER 1 -p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn -j DROP
+iptables -w 2 -C DOCKER-USER -p udp -m hashlimit --hashlimit-above 3000/s --hashlimit-burst 500 --hashlimit-mode srcip --hashlimit-name vps_udp -j DROP 2>/dev/null || \
+iptables -w 2 -I DOCKER-USER 2 -p udp -m hashlimit --hashlimit-above 3000/s --hashlimit-burst 500 --hashlimit-mode srcip --hashlimit-name vps_udp -j DROP
 fi
 else
+iptables -w 2 -D VPS-IN -p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn -j DROP 2>/dev/null || true
+iptables -w 2 -D VPS-IN -p udp -m hashlimit --hashlimit-above 3000/s --hashlimit-burst 500 --hashlimit-mode srcip --hashlimit-name vps_udp -j DROP 2>/dev/null || true
 iptables -w 2 -D VPS-IN -p tcp --syn -m limit --limit 500/s --limit-burst 100 -j ACCEPT 2>/dev/null || true
 iptables -w 2 -D VPS-IN -p tcp --syn -j DROP 2>/dev/null || true
 iptables -w 2 -D VPS-IN -p udp -m limit --limit 3000/s --limit-burst 500 -j ACCEPT 2>/dev/null || true
 iptables -w 2 -D VPS-IN -p udp -j DROP 2>/dev/null || true
 if iptables -w 2 -L DOCKER-USER -n >/dev/null 2>&1; then
+iptables -w 2 -D DOCKER-USER -p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn -j DROP 2>/dev/null || true
+iptables -w 2 -D DOCKER-USER -p udp -m hashlimit --hashlimit-above 3000/s --hashlimit-burst 500 --hashlimit-mode srcip --hashlimit-name vps_udp -j DROP 2>/dev/null || true
 iptables -w 2 -D DOCKER-USER -p tcp --syn -m limit --limit 500/s --limit-burst 100 -j ACCEPT 2>/dev/null || true
 iptables -w 2 -D DOCKER-USER -p tcp --syn -j DROP 2>/dev/null || true
 iptables -w 2 -D DOCKER-USER -p udp -m limit --limit 3000/s --limit-burst 500 -j ACCEPT 2>/dev/null || true
@@ -1039,8 +1099,12 @@ fi
 fw_save
 }
 fw_reset(){ require_root; iptables -w 2 -P INPUT ACCEPT; iptables -w 2 -F VPS-IN 2>/dev/null || true
-ipset flush vps_blacklist 2>/dev/null || true; ipset flush vps_whitelist 2>/dev/null || true; fw_init; iptables -w 2 -P INPUT DROP; fw_save
-printf "${CLR_GREEN}防火墙规则已重置至初始状态${CLR_RESET}\n"
+if command -v ip6tables >/dev/null 2>&1; then
+ip6tables -w 2 -P INPUT ACCEPT 2>/dev/null || true; ip6tables -w 2 -F VPS-IN 2>/dev/null || true
+fi
+ipset flush vps_blacklist 2>/dev/null || true; ipset flush vps_whitelist 2>/dev/null || true; fw_init; iptables -w 2 -P INPUT DROP
+command -v ip6tables >/dev/null 2>&1 && ip6tables -w 2 -P INPUT DROP 2>/dev/null || true; fw_save
+printf "${CLR_GREEN}防火墙规则已重置至初始状态 (IPv4/IPv6 双栈生效)${CLR_RESET}\n"
 }
 ui_fw(){
 while true; do
@@ -1217,6 +1281,9 @@ fi
 printf "\n${CLR_BOLD}发现新版本: ${CLR_GREEN}%s${CLR_RESET} ${CLR_DIM}(当前: %s)${CLR_RESET}\n" "$remote_ver" "$VPS_VERSION"
 [ -n "$remote_date" ] && printf "${CLR_DIM}发布时间: %s${CLR_RESET}\n\n" "$remote_date"; local confirm="${1:-}"
 if [ "$confirm" != "-y" ] && [ "$confirm" != "--yes" ]; then
+if [ ! -t 0 ]; then
+rm -f "$tmp"; printf "${CLR_RED}错误: 非交互环境请使用: vs up -y${CLR_RESET}\n" >&2; return 1
+fi
 read -r -p "确认更新? (y/N, 回车取消): " confirm
 fi
 case "$confirm" in
@@ -1424,8 +1491,14 @@ local apps_json="[]"
 if [ -n "$installed_apps" ]; then
 apps_json="[$(sed 's/[^ ]*/"&"/g; s/ /, /g' <<< "$installed_apps")]"
 fi
-printf '{"sys":{"os":"%s","kernel":"%s","arch":"%s","cores":%s,"load":"%s","mem_used_mb":%d,"mem_total_mb":%d,"mem_pct":%s,"swap_used_mb":%d,"swap_total_mb":%d,"swap_pct":%s,"disk":"%s"},"net":{"ipv4":"%s","bbr":"%s"},"sec":{"ssh_port":%s,"pwd_auth":"%s","root_login":"%s","f2b_status":"%s","f2b_banned":%d},"fw":{"mode":"%s","open_ports":%s,"ping":"%s","ddos":"%s"},"apps":{"docker":"%s","installed":%s,"catalog":"https://raw.githubusercontent.com/666OS/vps-apps/main/llms.txt"}}\n' \
-"$os" "$kernel" "$arch" "$cores" "$load" "$m_u" "$m_t" "$m_p" "$s_u" "$s_t" "$s_p" "$disk" "$ipv4" "$bbr" "$ssh_port" "$pwd_auth" "$root_login" "$f2b_status" "${f2b_banned:-0}" "$fw_mode" "$ports_json" "$ping_st" "$ddos_st" "$docker_st" "$apps_json"
+local json_fw_mode="unconfigured"; [ "$fw_mode" = "白名单模式 (默认拦截)" ] && json_fw_mode="whitelist"
+[ "$fw_mode" = "黑名单模式 (默认放行)" ] && json_fw_mode="blacklist"; local json_ping=true; [ "$ping_st" = "已拦截" ] && json_ping=false
+local json_ddos=false; [ "$ddos_st" = "已开启" ] && json_ddos=true; local json_f2b_installed=false json_f2b_active=false
+[ "$f2b_status" != "未安装" ] && json_f2b_installed=true; [[ "$f2b_status" =~ "运行中" ]] && json_f2b_active=true
+local json_docker_installed=false json_docker_active=false; [ "$docker_st" != "未安装" ] && json_docker_installed=true
+[[ "$docker_st" =~ "运行中" ]] && json_docker_active=true
+printf '{"sys":{"os":"%s","kernel":"%s","arch":"%s","cores":%s,"load":"%s","mem_used_mb":%d,"mem_total_mb":%d,"mem_pct":%s,"swap_used_mb":%d,"swap_total_mb":%d,"swap_pct":%s,"disk":"%s"},"net":{"ipv4":"%s","bbr":"%s"},"sec":{"ssh_port":%s,"pwd_auth":"%s","root_login":"%s","f2b":{"installed":%s,"active":%s,"banned":%d}},"fw":{"mode":"%s","open_ports":%s,"ping_allow":%s,"ddos_protect":%s},"docker":{"installed":%s,"active":%s,"version":"%s","running":%s,"images":%s},"apps":{"installed":%s,"catalog":"https://raw.githubusercontent.com/666OS/vps-apps/main/llms.txt"}}\n' \
+"$os" "$kernel" "$arch" "$cores" "$load" "$m_u" "$m_t" "$m_p" "$s_u" "$s_t" "$s_p" "$disk" "$ipv4" "$bbr" "$ssh_port" "$pwd_auth" "$root_login" "$json_f2b_installed" "$json_f2b_active" "${f2b_banned:-0}" "$json_fw_mode" "$ports_json" "$json_ping" "$json_ddos" "$json_docker_installed" "$json_docker_active" "${d_ver:-}" "${d_run:-0}" "${d_img:-0}" "$apps_json"
 else
 printf "${CLR_BOLD}=== VPS-SH 系统快照 (AI 诊断) ===${CLR_RESET}\n"; printf "系统: %s (%s) | %s 核心 | 负载: %s\n" "$os" "$arch" "$cores" "$load"
 printf "内存: %s/%s MB (%s%%) | Swap: %s/%s MB (%s%%) | 磁盘: %s\n" "$m_u" "$m_t" "$m_p" "$s_u" "$s_t" "$s_p" "$disk"
@@ -1566,7 +1639,7 @@ printf "${CLR_RED}错误: Docker 未运行${CLR_RESET}\n" >&2; return 0
 fi
 docker system prune -f; printf "${CLR_GREEN}已清理无用容器与镜像缓存${CLR_RESET}\n"
 }
-docker_toggle(){ require_root
+docker_cleanup(){ docker_prune "$@"; }; docker_toggle(){ require_root
 if docker_is_active; then
 systemctl stop docker docker.socket 2>/dev/null || systemctl stop docker
 else
@@ -1908,14 +1981,15 @@ fi
 }
 app_uninstall(){ require_root; local name="$1"; local purge_data="${2:-0}"; app_valid_name "$name" || return 1
 local dir="/opt/vps-sh/apps/$name"; [ -d "$dir" ] || return 0; local port=$(app_get_port "$name"); local host=$(app_get_host "$name")
-(cd "$dir" && docker compose down -v 2>/dev/null || true)
-if [ "$host" = "0.0.0.0" ] && [ -n "$port" ] && [ "$port" != "-" ] && fw_is_initialized 2>/dev/null; then
-fw_close "$port" 2>/dev/null || true
-fi
 if [ "$purge_data" = "1" ]; then
+(cd "$dir" && docker compose down -v 2>/dev/null || true)
 rm -rf "$dir"
 else
+(cd "$dir" && docker compose down 2>/dev/null || true)
 rm -f "$dir/compose.yaml" "$dir/docker-compose.yml" "$dir/.env" 2>/dev/null || true
+fi
+if [ "$host" = "0.0.0.0" ] && [ -n "$port" ] && [ "$port" != "-" ] && fw_is_initialized 2>/dev/null; then
+fw_close "$port" 2>/dev/null || true
 fi
 }
 app_render_col(){ local idx="$1" name="$2" st="$3" tag="$4" target="${5:-39}"; local num=$(printf "[%2d]" "$idx"); local raw_badge=""
