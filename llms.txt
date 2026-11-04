@@ -46,16 +46,17 @@ All commands are non-interactive, idempotent, and exit with status 0 on success.
 - `vs sec_passwd <user> <password>`: Update user password non-interactively.
 
 ### 4. Native Firewall Management (`fw_*`)
-- `vs fw_open <port...>`: Allow inbound TCP/UDP ports through `VPS-IN` chain (IPv4/IPv6 dual-stack).
+- `vs fw_open <port...>`: Allow inbound TCP/UDP ports through `VPS-IN` and `VPS-DOCKER` chains (IPv4/IPv6 dual-stack, controls host and Docker published ports).
 - `vs fw_close <port...>`: Close previously opened ports (SSH protection port is permanently guarded).
 - `vs fw_open_all`: Switch to Blacklist Mode (`INPUT ACCEPT`, default pass).
-- `vs fw_close_all`: Switch to Whitelist Mode (`INPUT DROP`, default block, high security).
-- `vs fw_ban_ip <ip...>`: Add IP or CIDR to `vps_blacklist` ipset.
+- `vs fw_close_all`: Switch to Whitelist Mode (`INPUT DROP` & `VPS-DOCKER DROP`, default block for both host and Docker published ports).
+- `vs fw_apply`: Atomically compile and apply firewall state from `/etc/vps-sh/fw.conf` via `iptables-restore --noflush`.
+- `vs fw_ban_ip <ip...>`: Add IP or CIDR to `vps_blacklist` ipset (blocks host and containers).
 - `vs fw_allow_ip <ip...>`: Add IP or CIDR to `vps_whitelist` ipset.
 - `vs fw_unban_ip <ip...>`: Remove IP or CIDR from firewall sets.
 - `vs fw_ping [on|off|toggle]`: Enable or disable ICMP echo replies.
 - `vs fw_ddos [on|off|toggle]`: Enable SYN/UDP rate limiting against DDoS (drops floods without port bypass).
-- `vs fw_reset`: Safely reset firewall rules to baseline without dropping active SSH session.
+- `vs fw_reset`: Safely reset firewall rules to baseline (retains running Docker published ports).
 
 ### 5. Docker & Container Lifecycle (`docker_*`)
 - `vs docker_install`: Install Docker Engine and Docker Compose plugin.
@@ -74,6 +75,7 @@ All commands are non-interactive, idempotent, and exit with status 0 on success.
 
 ## Safety Assertions & Guardrails
 - **Dual-Stack Firewall**: Inbound firewall rules synchronize across `iptables` (IPv4) and `ip6tables` (IPv6).
+- **Docker Port Whitelist Enforcement**: Under whitelist mode, Docker published ports (DNAT via FORWARD) are strictly filtered via `VPS-DOCKER` on `DOCKER-USER`. New published ports require `vs fw_open <port>` to be exposed externally.
 - **Container Network Isolation**: Docker bridge traffic routes through `FORWARD`; binding to `127.0.0.1` ensures true local-only isolation for reverse proxies.
 - **SSH Lockout Immunity**: SSH port is guarded in hardware logic; `fw_close` explicitly rejects closing SSH port. On Ubuntu 22.10+, handles `ssh.socket` listen streams.
 - **Fail-Safe Rollback**: `sec_ssh_apply` validates config syntax with `sshd -t` before restarting daemon; auto-reverts on failure.
