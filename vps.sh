@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="de50652"; VPS_BUILD_TIME="2026-11-04 16:40"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="9b346e6"; VPS_BUILD_TIME="2026-11-04 17:10"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -1311,6 +1311,98 @@ read -r -p "请选择: " choice
 case "$choice" in 1) ops_update && read -r -p "按回车返回..." ;; 2) sys_uninstall ;; 0|*) return ;; esac
 done
 }
+ai_snapshot(){ local mode="${1:-text}"; local os=$(grep -oP '(?<=PRETTY_NAME=")[^"]*' /etc/os-release 2>/dev/null || uname -sr)
+local kernel=$(uname -r); local arch=$(uname -m); local cores=$(nproc 2>/dev/null || echo 1)
+local load=$(awk '{print $1", "$2", "$3}' /proc/loadavg 2>/dev/null || uptime 2>/dev/null | awk -F'load average: ' '{print $2}')
+local m_u=0 m_t=0 m_p="0.0" s_u=0 s_t=0 s_p="0.0"
+local mem_raw=$(free -m 2>/dev/null | awk '
+        NR==2 {m_u=$3; m_t=$2; m_p=($2>0?$3*100/$2:0)}
+        NR==3 {s_u=$3; s_t=$2; s_p=($2>0?$3*100/$2:0)}
+        END {printf "%d|%d|%.1f|%d|%d|%.1f", m_u, m_t, m_p, s_u, s_t, s_p}
+    ')
+[ -n "$mem_raw" ] && IFS='|' read -r m_u m_t m_p s_u s_t s_p <<< "$mem_raw"
+local disk=$(df -h / 2>/dev/null | awk 'NR==2{printf "%s/%s (%s)", $3, $2, $5}'); local ipv4="${VPS_IPV4_CACHE:-}"
+if [ -z "$ipv4" ]; then
+local k_ip=$( (ip -4 route get 1.1.1.1 2>/dev/null || true) | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')
+if [ -n "$k_ip" ] && [[ ! "$k_ip" =~ ^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.|169\.254\.) ]]; then
+ipv4="$k_ip"
+else
+ipv4=$(curl -s4m2 https://api.ipify.org 2>/dev/null || curl -s4m2 https://icanhazip.com 2>/dev/null || echo "离线")
+fi
+if [ "$ipv4" != "离线" ]; then
+export VPS_IPV4_CACHE="$ipv4"
+fi
+fi
+local bbr=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知"); local ssh_port=$(sec_get_port 2>/dev/null || echo 22)
+local pwd_auth=$(sec_get_pwd 2>/dev/null || echo "yes"); local root_login=$(sec_get_root_login 2>/dev/null || echo "yes")
+local f2b_status="未安装"; local f2b_banned=0
+if command -v fail2ban-client >/dev/null 2>&1; then
+if systemctl is-active --quiet fail2ban 2>/dev/null; then
+f2b_banned=$(fail2ban-client status sshd 2>/dev/null | awk '/Currently banned:/ {print $NF}'); f2b_status="运行中 (封禁 ${f2b_banned:-0})"
+else
+f2b_status="已停止"
+fi
+fi
+local fw_mode="未配置"; local fw_ports=""; local ping_st="允许"; local ddos_st="已关闭"
+if iptables -L VPS-IN -n >/dev/null 2>&1; then
+local ipt_s=$(iptables -S 2>/dev/null || true)
+if grep -q '^-P INPUT DROP' <<< "$ipt_s"; then
+fw_mode="白名单模式 (默认拦截)"
+else
+fw_mode="黑名单模式 (默认放行)"
+fi
+fw_ports=$(awk -v ssh="$ssh_port" '
+        /^-A (INPUT|VPS-IN)/ && /-j ACCEPT/ && /--dport/ {
+            for(i=1;i<=NF;i++) {
+                if($i=="--dport") {
+                    p=$(i+1)
+                    if(p=="http") p="80"
+                    if(p=="https") p="443"
+                    if(!seen[p]++) ports=(ports?ports ", ": "") p
+                }
+            }
+        }
+        END { print ports }' <<< "$ipt_s")
+grep -qE '^-A VPS-IN -p icmp .*-j DROP' <<< "$ipt_s" && ping_st="已拦截"
+grep -qE '^-A VPS-IN -p tcp .*(SYN|--syn) -j DROP' <<< "$ipt_s" && ddos_st="已开启"
+fi
+local docker_st="未安装"
+if command -v docker >/dev/null 2>&1; then
+local d_info=$(docker info --format '{{.ServerVersion}}|{{.Containers}}|{{.ContainersRunning}}|{{.Images}}' 2>/dev/null || true)
+if [ -n "$d_info" ]; then
+IFS='|' read -r d_ver d_total d_run d_img <<< "$d_info"; docker_st="运行中 (版本: $d_ver | 活跃: ${d_run:-0} | 镜像: ${d_img:-0})"
+fi
+fi
+local installed_apps=""
+if [ -d "/opt/vps-sh/apps" ]; then
+installed_apps=$(find /opt/vps-sh/apps -mindepth 1 -maxdepth 1 -type d -exec test -f '{}/compose.yaml' -o -f '{}/docker-compose.yml' ';' -exec basename '{}' ';' 2>/dev/null | tr '\n' ' ' | sed 's/ $//')
+fi
+if [ "$mode" = "--json" ] || [ "$mode" = "-j" ] || [ "$mode" = "json" ]; then
+local ports_json="[]"
+if [ -n "$fw_ports" ]; then
+ports_json="[$(sed 's/[^, ]*/"&"/g' <<< "$fw_ports")]"
+fi
+local apps_json="[]"
+if [ -n "$installed_apps" ]; then
+apps_json="[$(sed 's/[^ ]*/"&"/g; s/ /, /g' <<< "$installed_apps")]"
+fi
+printf '{"sys":{"os":"%s","kernel":"%s","arch":"%s","cores":%s,"load":"%s","mem_used_mb":%d,"mem_total_mb":%d,"mem_pct":%s,"swap_used_mb":%d,"swap_total_mb":%d,"swap_pct":%s,"disk":"%s"},"net":{"ipv4":"%s","bbr":"%s"},"sec":{"ssh_port":%s,"pwd_auth":"%s","root_login":"%s","f2b_status":"%s","f2b_banned":%d},"fw":{"mode":"%s","open_ports":%s,"ping":"%s","ddos":"%s"},"apps":{"docker":"%s","installed":%s}}\n' \
+"$os" "$kernel" "$arch" "$cores" "$load" "$m_u" "$m_t" "$m_p" "$s_u" "$s_t" "$s_p" "$disk" "$ipv4" "$bbr" "$ssh_port" "$pwd_auth" "$root_login" "$f2b_status" "${f2b_banned:-0}" "$fw_mode" "$ports_json" "$ping_st" "$ddos_st" "$docker_st" "$apps_json"
+else
+printf "${CLR_BOLD}=== VPS-SH 系统快照 (AI 诊断) ===${CLR_RESET}\n"; printf "系统: %s (%s) | %s 核心 | 负载: %s\n" "$os" "$arch" "$cores" "$load"
+printf "内存: %s/%s MB (%s%%) | Swap: %s/%s MB (%s%%) | 磁盘: %s\n" "$m_u" "$m_t" "$m_p" "$s_u" "$s_t" "$s_p" "$disk"
+printf "网络: IPv4: %s | BBR: %s\n" "$ipv4" "$bbr"
+printf "安全: SSH 端口: %s | 密码登录: %s | Root: %s | Fail2ban: %s\n" "$ssh_port" "$pwd_auth" "$root_login" "$f2b_status"
+printf "防火墙: %s | 放行端口: %s | Ping: %s | 防DDoS: %s\n" "$fw_mode" "${fw_ports:-无}" "$ping_st" "$ddos_st"
+printf "容器引擎: %s | 本地应用: %s\n\n" "$docker_st" "${installed_apps:-无}"; printf "${CLR_BOLD}=== VPS-SH 宿主机原生操作指令集 ===${CLR_RESET}\n"
+printf "${CLR_DIM}【提示: 优先使用宿主机已安装的 vs CLI 原生指令为用户解决问题】${CLR_RESET}\n"
+printf " - 系统运维: vs sys_swap <mb> (虚拟内存) | vs sys_tune (性能BBR) | vs sys_clean (清理缓存)\n"
+printf " - 网络配置: vs net_dns_foreign (国外DNS) | vs net_dns_china (国内DNS) | vs net_prio_v4 (IPv4优先)\n"
+printf " - 安全加固: vs sec_port <port> (修改SSH端口) | vs sec_lock_pwd (禁密码仅密钥) | vs sec_unlock_pwd (允许密码)\n"
+printf " - 防火墙: vs fw_open <port...> (放行端口) | vs fw_close <port...> (关闭端口) | vs fw_ban_ip <ip> (封禁IP) | vs fw_unban_ip <ip> (移除限制) | vs fw_open_all (黑名单模式) | vs fw_close_all (白名单模式)\n"
+printf " - 容器与应用: vs docker_install (安装Docker) | vs docker_cleanup (清理容器镜像) | vs app_install <id> [port] (部署应用) | vs app_update <id> (更新应用)\n"
+fi
+}
 docker_is_installed(){ command -v docker >/dev/null 2>&1
 }
 docker_is_active(){ systemctl is-active --quiet docker 2>/dev/null
@@ -2067,12 +2159,14 @@ clear; printf "${CLR_BOLD}VPS-SH · Linux 运维控制台${CLR_RESET}\n"
 printf "${CLR_DIM}版本: %s${CLR_RESET}%s\n\n" "$VPS_VERSION" "$(ops_update_badge)"; sys_snapshot; echo
 printf "${CLR_CYAN}[1]${CLR_RESET} 系统配置\n"; printf "${CLR_CYAN}[2]${CLR_RESET} 网络配置\n"; printf "${CLR_CYAN}[3]${CLR_RESET} 安全防护\n"
 printf "${CLR_CYAN}[4]${CLR_RESET} 运维监控\n"; printf "${CLR_CYAN}[5]${CLR_RESET} 应用市场\n"; printf "${CLR_CYAN}[6]${CLR_RESET} 容器引擎\n\n"
-printf "${CLR_CYAN}[00]${CLR_RESET} 脚本管理\n"; printf "${CLR_DIM}[0]${CLR_RESET}  退出\n\n"; read -r -p "请选择: " choice
-case "$choice" in 1) ui_sys ;; 2) ui_net ;; 3) ui_sec ;; 4) ui_ops ;; 5) ui_app_engine ;; 6) ui_docker ;; 00) ui_mgr ;; 0) exit 0 ;; *) ;; esac
+printf "${CLR_CYAN}[ai]${CLR_RESET} AI 诊断快照\n"; printf "${CLR_CYAN}[00]${CLR_RESET} 脚本管理\n"; printf "${CLR_DIM}[0]${CLR_RESET}  退出\n\n"
+read -r -p "请选择: " choice
+case "$choice" in 1) ui_sys ;; 2) ui_net ;; 3) ui_sec ;; 4) ui_ops ;; 5) ui_app_engine ;; 6) ui_docker ;; ai|AI) clear; ai_snapshot; echo; read -r -p "按回车返回..." ;; 00) ui_mgr ;; 0|"") exit 0 ;; *) ;; esac
 done
 }
 case "${1:-}" in
 rm|un|uninstall) sys_uninstall ;; up|update) shift; ops_update "$@" ;; app|apps|market) ui_app_engine ;; docker|d) ui_docker ;;
+ai) shift; ai_snapshot "$@" ;;
 *)
 sys_shortcut 2>/dev/null || true
 if [ $# -eq 0 ]; then
@@ -2082,7 +2176,7 @@ fi
 ui
 else
 if [ "$(type -t "$1" 2>/dev/null)" = "function" ]; then
-case "$1" in sys_*|net_*|sec_*|fw_*|ops_*|docker_*|app_*|ui*) "$@" ;; *) echo "未知命令: $1" >&2; exit 1 ;; esac
+case "$1" in sys_*|net_*|sec_*|fw_*|ops_*|docker_*|app_*|ai_*|ui*) "$@" ;; *) echo "未知命令: $1" >&2; exit 1 ;; esac
 else
 echo "未知命令: $1" >&2; exit 1
 fi
