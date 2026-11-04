@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="3d83f5e"; VPS_BUILD_TIME="2026-11-04 04:25"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="e1e36d4"; VPS_BUILD_TIME="2026-11-04 10:52"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -1489,6 +1489,12 @@ local p=$(awk '/:[0-9]+/ && match($0, /[0-9]+(\}:|:)[0-9]+/) { s=substr($0, RSTA
 fi
 echo "-"
 }
+app_get_host(){ local name="$1"; app_valid_name "$name" || { echo "0.0.0.0"; return 0; }; local env_file="/opt/vps-sh/apps/$name/.env"
+if [ -f "$env_file" ]; then
+local h=$(awk -F= '$1=="APP_HOST" {print $2; exit}' "$env_file" | tr -d ' "\r'); [ -n "$h" ] && { echo "$h"; return 0; }
+fi
+echo "0.0.0.0"
+}
 app_cloud_fetch(){ local cache="${VPS_CACHE_DIR:-/tmp}/catalog.json"; local now=$(date +%s); local mtime=0
 [ -f "$cache" ] && mtime=$(stat -c %Y "$cache" 2>/dev/null || stat -f %m "$cache" 2>/dev/null || echo 0)
 [ $((now - mtime)) -lt 600 ] && return 0; command -v curl >/dev/null 2>&1 || return 1
@@ -1528,11 +1534,19 @@ local local_entry=$(awk '
             if (k == "tag") tag = $0;
             if (k == "desc") desc = $0;
         }
-        port == "" && /:[0-9]+/ {
-            if (match($0, /[0-9]+(\}:|:)[0-9]+/)) {
+        port == "" {
+            if (match($0, /\$\{APP_PORT:-[0-9]+\}/)) {
                 s = substr($0, RSTART, RLENGTH);
-                sub(/(\}:|:)[0-9]+/, "", s);
+                sub(/\$\{APP_PORT:-/, "", s);
+                sub(/\}/, "", s);
                 port = s;
+            } else if (match($0, /([0-9\.]+:)*[0-9]+:[0-9]+/)) {
+                s = substr($0, RSTART, RLENGTH);
+                n = split(s, parts, ":");
+                if (n >= 2) {
+                    gsub(/[^0-9]/, "", parts[n-1]);
+                    port = parts[n-1];
+                }
             }
         }
         END {
@@ -1548,7 +1562,7 @@ fi
 fi
 return 1
 }
-app_install(){ require_root; local name="$1"; local port="${2:-}"
+app_install(){ require_root; local name="$1"; local port="${2:-}"; local host="${3:-0.0.0.0}"; [ "$host" = "127.0.0.1" ] || host="0.0.0.0"
 if ! app_valid_name "$name"; then
 printf "${CLR_RED}错误: 非法应用名称${CLR_RESET}\n" >&2; return 1
 fi
@@ -1556,7 +1570,7 @@ local dir="/opt/vps-sh/apps/$name"
 if [ -d "$dir" ] && { [ -f "$dir/compose.yaml" ] || [ -f "$dir/docker-compose.yml" ]; }; then
 printf "${CLR_RED}错误: 应用 [%s] 已部署于 %s${CLR_RESET}\n" "$name" "$dir" >&2; return 1
 fi
-if [ -n "$port" ]; then
+if [ -n "$port" ] && [ "$port" != "-" ]; then
 if [[ ! "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
 printf "${CLR_RED}错误: 端口无效 (1-65535)${CLR_RESET}\n" >&2; return 1
 fi
@@ -1568,14 +1582,23 @@ app_init_dir; mkdir -p "$dir"; chmod 700 "$dir"
 if ! app_cloud_compose "$name" > "$dir/compose.yaml" 2>/dev/null || [ ! -s "$dir/compose.yaml" ]; then
 rm -rf "$dir"; printf "${CLR_RED}错误: 无法获取应用 [%s] 的模板配置${CLR_RESET}\n" "$name" >&2; return 1
 fi
-if [ -n "$port" ]; then
-printf "APP_PORT=%s\n" "$port" > "$dir/.env"; chmod 600 "$dir/.env"
+{ printf "APP_HOST=%s\n" "$host"; [ -n "$port" ] && [ "$port" != "-" ] && printf "APP_PORT=%s\n" "$port"; } > "$dir/.env"
+chmod 600 "$dir/.env"
+if (cd "$dir" && docker compose up -d); then
+if [ "$host" = "0.0.0.0" ] && [ -n "$port" ] && [ "$port" != "-" ] && fw_is_initialized 2>/dev/null; then
+fw_open "$port" 2>/dev/null || true
 fi
-(cd "$dir" && docker compose up -d)
+return 0
+else
+return 1
+fi
 }
 app_uninstall(){ require_root; local name="$1"; local purge_data="${2:-0}"; app_valid_name "$name" || return 1
-local dir="/opt/vps-sh/apps/$name"; [ -d "$dir" ] || return 0
+local dir="/opt/vps-sh/apps/$name"; [ -d "$dir" ] || return 0; local port=$(app_get_port "$name"); local host=$(app_get_host "$name")
 (cd "$dir" && docker compose down -v 2>/dev/null || true)
+if [ "$host" = "0.0.0.0" ] && [ -n "$port" ] && [ "$port" != "-" ] && fw_is_initialized 2>/dev/null; then
+fw_close "$port" 2>/dev/null || true
+fi
 if [ "$purge_data" = "1" ]; then
 rm -rf "$dir"
 else
@@ -1604,14 +1627,54 @@ if [ -n "$meta" ]; then
 title=$(echo "$meta" | cut -d'|' -f1); default_port=$(echo "$meta" | cut -d'|' -f2); desc=$(echo "$meta" | cut -d'|' -f4)
 [ -z "$desc" ] && desc=$(echo "$meta" | cut -d'|' -f3)
 fi
-clear; printf -- "${CLR_BOLD}--- 安装: %s ---${CLR_RESET}\n\n" "$title"; [ -n "$desc" ] && printf "  ${CLR_DIM}说明:${CLR_RESET} %s\n" "$desc"
-printf "  ${CLR_DIM}默认端口:${CLR_RESET} %s\n\n" "$default_port"; read -r -p "映射端口 [$default_port]: " input_port
-local port="${input_port:-$default_port}"
-if app_port_in_use "$port"; then
-printf "${CLR_RED}错误: 端口 [%s] 已被占用${CLR_RESET}\n" "$port"; read -r -p "按回车返回..."; return 1
+local port="$default_port"; local host="0.0.0.0"; local target_dir="/opt/vps-sh/apps/$app"
+while true; do
+clear; local mode_desc="${CLR_GREEN}公网直接访问 (0.0.0.0)${CLR_RESET} · 自动放行防火墙"
+[ "$host" = "127.0.0.1" ] && mode_desc="${CLR_YELLOW}本地反代模式 (127.0.0.1)${CLR_RESET} · 不暴露公网"
+printf -- "${CLR_BOLD}--- 安装: %s ---${CLR_RESET}\n\n" "$title"; [ -n "$desc" ] && printf "  ${CLR_DIM}说明:${CLR_RESET} %s\n" "$desc"
+printf "  ${CLR_DIM}端口:${CLR_RESET} %s\n" "$port"; printf "  ${CLR_DIM}网络:${CLR_RESET} %b\n" "$mode_desc"
+printf "  ${CLR_DIM}路径:${CLR_RESET} %s\n\n" "$target_dir"; printf "${CLR_CYAN}[Enter]${CLR_RESET} 立即部署    "
+printf "${CLR_CYAN}[p]${CLR_RESET} 修改端口    "; printf "${CLR_CYAN}[h]${CLR_RESET} 切换网络    "; printf "${CLR_DIM}[0] 取消${CLR_RESET}\n\n"
+read -r -p "请选择: " choice
+case "$choice" in
+""|[yY]|[yY][eE][sS]|1)
+if [ -n "$port" ] && [ "$port" != "-" ] && app_port_in_use "$port"; then
+printf "\n${CLR_RED}错误: 端口 [%s] 已被占用，请按 [p] 修改端口${CLR_RESET}\n" "$port"; read -r -p "按回车继续..."; continue
 fi
-printf "正在拉取并启动 %s...\n" "$title"; app_install "$app" "$port"; printf "${CLR_GREEN}部署完成 (端口: %s)${CLR_RESET}\n" "$port"
-read -r -p "按回车返回..."
+echo; printf "正在拉取并编排 %s...\n\n" "$title"
+if app_install "$app" "$port" "$host"; then
+printf "\n${CLR_GREEN}✓ 部署完成${CLR_RESET}\n"
+if [ "$host" = "0.0.0.0" ] && [ -n "$port" ] && [ "$port" != "-" ]; then
+local ip=$(curl -fsSLm 2 https://api.ipify.org 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo "IP")
+printf "  ${CLR_DIM}访问地址:${CLR_RESET} http://%s:%s\n" "$ip" "$port"
+else
+printf "  ${CLR_DIM}本地地址:${CLR_RESET} http://127.0.0.1:%s (供反向代理使用)\n" "$port"
+fi
+else
+printf "\n${CLR_RED}部署失败，请检查 Docker 日志${CLR_RESET}\n"
+fi
+echo; read -r -p "按回车返回..."; return 0; ;;
+p|P)
+read -r -p "请输入映射端口 [$port]: " input_port
+if [ -n "$input_port" ]; then
+if [[ ! "$input_port" =~ ^[0-9]+$ ]] || [ "$input_port" -lt 1 ] || [ "$input_port" -gt 65535 ]; then
+printf "${CLR_RED}端口必须为 1-65535 之间的数字${CLR_RESET}\n"; sleep 1
+else
+port="$input_port"
+fi
+fi
+;;
+h|H)
+if [ "$host" = "0.0.0.0" ]; then
+host="127.0.0.1"
+else
+host="0.0.0.0"
+fi
+;;
+0|q|Q)
+return 0; ;;
+esac
+done
 }
 ui_app_manage_single(){ local name="$1"; local st=$(app_status "$name")
 if [ "$st" = "未安装" ]; then
@@ -1623,15 +1686,17 @@ title=$(echo "$meta" | cut -d'|' -f1); desc=$(echo "$meta" | cut -d'|' -f4); [ -
 fi
 local target_dir="/opt/vps-sh/apps/$name"
 while true; do
-clear; local st=$(app_status "$name"); local port=$(app_get_port "$name"); local st_clr="$CLR_DIM"
+clear; local st=$(app_status "$name"); local port=$(app_get_port "$name"); local host=$(app_get_host "$name")
+local net_desc="${host} (公网)"; [ "$host" = "127.0.0.1" ] && net_desc="${host} (内网反代)"; local st_clr="$CLR_DIM"
 [ "$st" = "运行中" ] && st_clr="$CLR_GREEN"; [ "$st" = "部分运行" ] && st_clr="$CLR_YELLOW"; [ "$st" = "启动异常" ] && st_clr="$CLR_RED"
 [ "$st" = "已停止" ] && st_clr="$CLR_RED"; printf -- "${CLR_BOLD}--- 应用详情 ---${CLR_RESET}\n\n"
 printf "  ${CLR_DIM}应用:${CLR_RESET} %s\n" "$name"; printf "  ${CLR_DIM}状态:${CLR_RESET} %b%s%b\n" "$st_clr" "$st" "$CLR_RESET"
-printf "  ${CLR_DIM}端口:${CLR_RESET} %s\n" "$port"; printf "  ${CLR_DIM}数据:${CLR_RESET} %s/data\n" "$target_dir"
-printf "  ${CLR_DIM}说明:${CLR_RESET} %s\n\n" "$desc"; local act_toggle="[2] 停止"; [ "$st" = "已停止" ] && act_toggle="[2] 启动"
+printf "  ${CLR_DIM}端口:${CLR_RESET} %s\n" "$port"; printf "  ${CLR_DIM}网络:${CLR_RESET} %s\n" "$net_desc"
+printf "  ${CLR_DIM}数据:${CLR_RESET} %s/data\n" "$target_dir"; printf "  ${CLR_DIM}说明:${CLR_RESET} %s\n\n" "$desc"
+local act_toggle="[2] 停止"; [ "$st" = "已停止" ] && act_toggle="[2] 启动"
 printf "${CLR_CYAN}[1]${CLR_RESET} 重启    ${CLR_CYAN}%s${CLR_RESET}    ${CLR_CYAN}[3]${CLR_RESET} 日志\n" "$act_toggle"
-printf "${CLR_CYAN}[4]${CLR_RESET} 更新    ${CLR_CYAN}[5]${CLR_RESET} 卸载\n\n"; printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"
-read -r -p "请选择: " choice
+printf "${CLR_CYAN}[4]${CLR_RESET} 更新    ${CLR_CYAN}[5]${CLR_RESET} 卸载    ${CLR_CYAN}[6]${CLR_RESET} 编辑配置\n\n"
+printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"; read -r -p "请选择: " choice
 case "$choice" in
 1)
 app_restart "$name"; read -r -p "按回车返回..."; ;;
@@ -1649,6 +1714,19 @@ app_update "$name"; read -r -p "按回车返回..."; ;;
 5)
 read -r -p "删除数据目录? (y/N): " purge_confirm; local purge=0; [[ "$purge_confirm" =~ ^[yY] ]] && purge=1; app_uninstall "$name" "$purge"
 printf "${CLR_GREEN}已卸载${CLR_RESET}\n"; read -r -p "按回车返回..."; return 0; ;;
+6)
+local editor="${EDITOR:-}"
+if [ -z "$editor" ]; then
+command -v nano >/dev/null 2>&1 && editor="nano"; [ -z "$editor" ] && command -v vim >/dev/null 2>&1 && editor="vim"
+[ -z "$editor" ] && editor="vi"
+fi
+local compose_file="$target_dir/compose.yaml"; [ -f "$compose_file" ] || compose_file="$target_dir/docker-compose.yml"
+"$editor" "$compose_file"; echo; read -r -p "配置已保存，是否重新编排以生效改动? (y/N): " reload_cf
+if [[ "$reload_cf" =~ ^[yY] ]]; then
+(cd "$target_dir" && docker compose up -d)
+printf "${CLR_GREEN}已重新编排生效${CLR_RESET}\n"; read -r -p "按回车返回..."
+fi
+;;
 0|*)
 return 0; ;;
 esac
