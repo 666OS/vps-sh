@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="b7cf922"; VPS_BUILD_TIME="2026-11-04 21:09"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="380692e"; VPS_BUILD_TIME="2026-11-04 21:54"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -144,7 +144,8 @@ fi
 case "$confirm" in
 [yY][eE][sS]|[yY]|-y|--yes)
 local self=$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")
-systemctl disable --now vps-firewall 2>/dev/null || true
+systemctl disable --now vps-firewall 2>/dev/null || true; rm -f /etc/systemd/system/docker.service.d/10-vps-fw.conf 2>/dev/null || true
+local t; for t in iptables ip6tables; do $t -w 2 -D DOCKER-USER -j VPS-DOCKER 2>/dev/null || true; done
 rm -f /etc/systemd/system/vps-firewall.service /usr/local/bin/vs /usr/bin/vs 2>/dev/null || true
 rm -rf /etc/vps-sh /run/vps-sh /tmp/.vps_* 2>/dev/null || true; systemctl daemon-reload 2>/dev/null || true
 [ -f "$self" ] && rm -f "$self" 2>/dev/null || true; echo "已卸载"; exit 0; ;;
@@ -386,9 +387,8 @@ if [[ ! "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; th
 printf "${CLR_RED}错误: 端口无效 (1-65535)${CLR_RESET}\n" >&2; return 1
 fi
 sec_ssh_apply "$port" "$(sec_get_pwd)" "$(sec_get_root_login)" || return 1
-iptables -C VPS-IN -p tcp --dport "$port" -j ACCEPT 2>/dev/null || iptables -A VPS-IN -p tcp --dport "$port" -j ACCEPT 2>/dev/null || true
-command -v ip6tables >/dev/null 2>&1 && { ip6tables -C VPS-IN -p tcp --dport "$port" -j ACCEPT 2>/dev/null || ip6tables -A VPS-IN -p tcp --dport "$port" -j ACCEPT 2>/dev/null || true; }
-fw_save 2>/dev/null || true; [ -d /etc/fail2ban/jail.d ] && sec_f2b_sync 2>/dev/null || true
+fw_is_initialized && { fw_apply >/dev/null 2>&1 || true; fw_save 2>/dev/null || true; } || true
+[ -d /etc/fail2ban/jail.d ] && sec_f2b_sync 2>/dev/null || true
 }
 sec_port_restore(){ sec_port 22
 }
@@ -835,111 +835,153 @@ esac
 fi
 done
 }
-fw_is_installed(){ command -v iptables >/dev/null 2>&1 && command -v ipset >/dev/null 2>&1
+VPS_FW_CONF="/etc/vps-sh/fw.conf"; fw_is_installed(){ command -v iptables >/dev/null 2>&1 && command -v ipset >/dev/null 2>&1
 }
-fw_is_initialized(){ iptables -L VPS-IN -n >/dev/null 2>&1
+fw_is_initialized(){ [ -f "$VPS_FW_CONF" ] || iptables -L VPS-IN -n >/dev/null 2>&1
 }
-fw_heal(){ [ "$(id -u)" -eq 0 ] || return 0; iptables -L VPS-IN -n >/dev/null 2>&1 || return 0; local dirty=0
-if iptables -S VPS-IN 2>/dev/null | awk '/--dport/ {d=1} /vps_blacklist.*-j DROP/ {if(d) exit 1}'; then :; else dirty=1; fi
-if command -v ip6tables >/dev/null 2>&1 && ip6tables -L VPS-IN -n >/dev/null 2>&1; then
-if ! ip6tables -w 2 -C VPS-IN -p ipv6-icmp -j ACCEPT 2>/dev/null; then
-dirty=1; elif ip6tables -S VPS-IN 2>/dev/null | awk '/--dport/ {d=1} /vps_blacklist6.*-j DROP/ {if(d) exit 1}'; then :; else dirty=1
-fi
-fi
-if [ "$dirty" -eq 1 ]; then
-fw_init >/dev/null 2>&1 || true; fw_save >/dev/null 2>&1 || true
+fw_conf_load(){ FW_MODE="blacklist"; FW_PORTS=""; FW_PING="on"; FW_DDOS="off"; [ -f "$VPS_FW_CONF" ] || return 1; local k v
+while IFS='=' read -r k v; do
+v="${v%\"}"; v="${v#\"}"
+case "$k" in MODE) FW_MODE="$v" ;; PORTS) FW_PORTS="$v" ;; PING) FW_PING="$v" ;; DDOS) FW_DDOS="$v" ;; esac
+done < "$VPS_FW_CONF"
+return 0
+}
+fw_conf_save(){ mkdir -p /etc/vps-sh; local t="$VPS_FW_CONF.tmp"
+printf 'MODE=%s\nPORTS="%s"\nPING=%s\nDDOS=%s\n' "$FW_MODE" "$FW_PORTS" "$FW_PING" "$FW_DDOS" > "$t" && mv -f "$t" "$VPS_FW_CONF"
+}
+fw_sets(){ ipset create vps_whitelist hash:net -exist 2>/dev/null || true; ipset create vps_blacklist hash:net -exist 2>/dev/null || true
+ipset create vps_whitelist6 hash:net family inet6 -exist 2>/dev/null || true
+ipset create vps_blacklist6 hash:net family inet6 -exist 2>/dev/null || true
+}
+fw_published_ports(){ local a p
+for a in $(app_list_installed 2>/dev/null || true); do
+[ "$(app_get_host "$a" 2>/dev/null)" = "0.0.0.0" ] || continue; p=$(app_get_port "$a" 2>/dev/null || true)
+[[ "$p" =~ ^[0-9]+$ ]] && echo "$p"
+done
+if command -v docker >/dev/null 2>&1; then
+docker ps --format '{{.Ports}}' 2>/dev/null | tr ',' '\n' | awk -F'->' '/->/ {
+            h=$1; gsub(/ /, "", h); n=split(h, a, ":"); p=a[n]; sub(/:[^:]*$/, "", h)
+            if(h=="0.0.0.0" || h=="[::]" || h=="::") { gsub(/-/, ":", p); print p }
+        }' || true
 fi
 }
-fw_conflict(){
-if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
-echo "ufw"; return 0
-fi
-if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
-echo "firewalld"; return 0
-fi
-return 1
+fw_migrate(){ FW_MODE="blacklist"; FW_PING="on"; FW_DDOS="off"; local ssh=$(sec_get_port)
+(iptables -S INPUT 2>/dev/null || true) | awk '/^-P INPUT DROP/ {f=1} END {exit !f}' && FW_MODE="whitelist" || true
+iptables -w 2 -C VPS-IN -p icmp --icmp-type echo-request -j DROP 2>/dev/null && FW_PING="off" || true
+(iptables -S VPS-IN 2>/dev/null || true) | awk '/hashlimit-name vps_syn .*-j DROP/ {f=1} END {exit !f}' && FW_DDOS="on" || true
+FW_PORTS=$( { iptables -S VPS-IN 2>/dev/null || true; ip6tables -S VPS-IN 2>/dev/null || true; } | awk '/-j ACCEPT/ && /--dport/ {
+        for(i=1;i<=NF;i++) if($i=="--dport") print $(i+1)
+    }'; fw_published_ports)
+FW_PORTS=$(printf '%s\n' "$FW_PORTS" | awk -v ssh="$ssh" '{ if($1=="http") $1="80"; if($1=="https") $1="443" }
+        $1 ~ /^[0-9]+(:[0-9]+)?$/ && $1!=ssh && !s[$1]++ { o=o (o?" ":"") $1 } END { print o }')
+local r
+for r in "-p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn -j DROP" \
+"-p udp -m hashlimit --hashlimit-above 3000/s --hashlimit-burst 500 --hashlimit-mode srcip --hashlimit-name vps_udp -j DROP" \
+"-p tcp --syn -m limit --limit 500/s --limit-burst 100 -j ACCEPT" "-p tcp --syn -j DROP" \
+"-p udp -m limit --limit 3000/s --limit-burst 500 -j ACCEPT" "-p udp -j DROP"; do iptables -w 2 -D DOCKER-USER $r 2>/dev/null || true
+done
+local f
+for f in rules.v4 rules.v6; do
+[ -f "/etc/iptables/$f" ] && mv -f "/etc/iptables/$f" "/etc/iptables/$f.vps-bak" 2>/dev/null || true
+done
+fw_conf_save
 }
-fw_resolve_conflict(){ require_root; local c=$(fw_conflict || true)
-if [ "$c" = "ufw" ]; then
-ufw disable 2>/dev/null || true; systemctl disable ufw 2>/dev/null || true; printf "${CLR_GREEN}已停用 UFW${CLR_RESET}\n"
-elif [ "$c" = "firewalld" ]; then systemctl disable --now firewalld 2>/dev/null || true; printf "${CLR_GREEN}已停用 Firewalld${CLR_RESET}\n"
+fw_rules(){ local v="$1" s="" bl="vps_blacklist" wl="vps_whitelist" icmp="-p icmp --icmp-type" p; local ssh=$(sec_get_port)
+[ "$v" = "6" ] && { s="6"; bl="vps_blacklist6"; wl="vps_whitelist6"; icmp="-p ipv6-icmp --icmpv6-type"; }
+local lim="-m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip"
+printf '*filter\n:VPS-IN - [0:0]\n:VPS-DOCKER - [0:0]\n'
+printf -- '-A VPS-IN -i lo -j ACCEPT\n-A VPS-IN -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT\n'
+[ "$FW_DDOS" = "on" ] && printf -- '-A VPS-IN -p tcp --syn %s --hashlimit-name vps_syn%s -j DROP\n' "$lim" "$s"
+[ "$FW_PING" = "off" ] && printf -- '-A VPS-IN %s echo-request -j DROP\n' "$icmp"
+[ "$v" = "6" ] && printf -- '-A VPS-IN -p ipv6-icmp -j ACCEPT\n'
+printf -- '-A VPS-IN -m set --match-set %s src -j DROP\n-A VPS-IN -m set --match-set %s src -j ACCEPT\n' "$bl" "$wl"
+printf -- '-A VPS-IN -p tcp --dport %s -j ACCEPT\n' "$ssh"
+for p in $FW_PORTS; do
+[[ "$p" =~ ^[0-9]+(:[0-9]+)?$ ]] || continue
+printf -- '-A VPS-IN -p tcp --dport %s -j ACCEPT\n-A VPS-IN -p udp --dport %s -j ACCEPT\n' "$p" "$p"
+done
+printf -- '-A VPS-DOCKER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN\n-A VPS-DOCKER -m conntrack ! --ctstate DNAT -j RETURN\n'
+printf -- '-A VPS-DOCKER -i docker0 -j RETURN\n-A VPS-DOCKER -i br-+ -j RETURN\n'
+[ "$FW_DDOS" = "on" ] && printf -- '-A VPS-DOCKER -p tcp --syn %s --hashlimit-name vps_dsyn%s -j DROP\n' "$lim" "$s"
+printf -- '-A VPS-DOCKER -m set --match-set %s src -j DROP\n' "$bl"
+if [ "$FW_MODE" = "whitelist" ]; then
+printf -- '-A VPS-DOCKER -m set --match-set %s src -j RETURN\n' "$wl"
+for p in $FW_PORTS; do
+[[ "$p" =~ ^[0-9]+(:[0-9]+)?$ ]] || continue
+printf -- '-A VPS-DOCKER -p tcp -m conntrack --ctorigdstport %s -j RETURN\n-A VPS-DOCKER -p udp -m conntrack --ctorigdstport %s -j RETURN\n' "$p" "$p"
+done
+printf -- '-A VPS-DOCKER -j DROP\n'
 fi
-fw_install
+printf 'COMMIT\n'
 }
-fw_install(){ require_root
-if ! fw_is_installed; then
-DEBIAN_FRONTEND=noninteractive apt-get update -y 2>/dev/null || true; DEBIAN_FRONTEND=noninteractive apt-get install -y iptables ipset
+fw_docker(){ command -v dockerd >/dev/null 2>&1 || return 0; local ipt n
+for ipt in iptables ip6tables; do
+command -v "$ipt" >/dev/null 2>&1 && "$ipt" -w 2 -L VPS-DOCKER -n >/dev/null 2>&1 || continue
+"$ipt" -w 2 -N DOCKER-USER 2>/dev/null || true
+[ "$("$ipt" -w 2 -S DOCKER-USER 2>/dev/null | awk 'NR==2')" = "-A DOCKER-USER -j VPS-DOCKER" ] || "$ipt" -w 2 -I DOCKER-USER 1 -j VPS-DOCKER
+for n in $("$ipt" -w 2 -S DOCKER-USER 2>/dev/null | awk '/^-A/ {r++} /^-A DOCKER-USER -j VPS-DOCKER$/ && r>1 {print r}' | sort -rn); do
+"$ipt" -w 2 -D DOCKER-USER "$n" 2>/dev/null || true
+done
+done
+}
+fw_apply(){ require_root; fw_is_installed || return 0; [ -f "$VPS_FW_CONF" ] || iptables -L VPS-IN -n >/dev/null 2>&1 || return 0
+fw_conf_load || fw_migrate; fw_sets; local pol="ACCEPT"; [ "$FW_MODE" = "whitelist" ] && pol="DROP"
+if ! fw_rules 4 | iptables-restore --noflush; then
+printf "${CLR_RED}错误: IPv4 规则加载失败，入站策略保持不变${CLR_RESET}\n" >&2; return 1
 fi
-fw_init; fw_save; printf "${CLR_GREEN}防火墙初始化完成${CLR_RESET}\n"
-}
-fw_init(){ ipset create vps_whitelist hash:net 2>/dev/null || true; ipset create vps_blacklist hash:net 2>/dev/null || true
-ipset create vps_whitelist6 hash:net family inet6 2>/dev/null || true
-ipset create vps_blacklist6 hash:net family inet6 2>/dev/null || true; iptables -w 2 -N VPS-IN 2>/dev/null || true
-iptables -w 2 -C INPUT -j VPS-IN 2>/dev/null || iptables -w 2 -I INPUT 1 -j VPS-IN
-iptables -w 2 -C VPS-IN -i lo -j ACCEPT 2>/dev/null || iptables -w 2 -A VPS-IN -i lo -j ACCEPT
-iptables -w 2 -C VPS-IN -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || iptables -w 2 -A VPS-IN -m state --state ESTABLISHED,RELATED -j ACCEPT
-local out_of_order4=0; iptables -S VPS-IN 2>/dev/null | awk '/--dport/ {d=1} /vps_blacklist.*-j DROP/ {if(d) exit 1}' || out_of_order4=1
-if ! iptables -w 2 -C VPS-IN -m set --match-set vps_blacklist src -j DROP 2>/dev/null || [ "$out_of_order4" -eq 1 ]; then
-iptables -w 2 -D VPS-IN -m set --match-set vps_blacklist src -j DROP 2>/dev/null || true
-iptables -w 2 -D VPS-IN -m set --match-set vps_whitelist src -j ACCEPT 2>/dev/null || true
-local pos4=$(iptables -S VPS-IN 2>/dev/null | awk '/^-A/ {r++} /--dport/ {print r; exit}')
-if [ -n "$pos4" ]; then
-iptables -w 2 -I VPS-IN "$pos4" -m set --match-set vps_whitelist src -j ACCEPT 2>/dev/null || true
-iptables -w 2 -I VPS-IN "$pos4" -m set --match-set vps_blacklist src -j DROP 2>/dev/null || true
+iptables -w 2 -C INPUT -j VPS-IN 2>/dev/null || iptables -w 2 -I INPUT 1 -j VPS-IN; iptables -w 2 -P INPUT "$pol"
+if command -v ip6tables-restore >/dev/null 2>&1 && ip6tables -L INPUT -n >/dev/null 2>&1; then
+if fw_rules 6 | ip6tables-restore --noflush 2>/dev/null; then
+ip6tables -w 2 -C INPUT -j VPS-IN 2>/dev/null || ip6tables -w 2 -I INPUT 1 -j VPS-IN; ip6tables -w 2 -P INPUT "$pol"
 else
-iptables -w 2 -A VPS-IN -m set --match-set vps_blacklist src -j DROP 2>/dev/null || true
-iptables -w 2 -A VPS-IN -m set --match-set vps_whitelist src -j ACCEPT 2>/dev/null || true
+printf "${CLR_YELLOW}警告: IPv6 规则加载失败，IPv6 入站策略保持不变${CLR_RESET}\n" >&2
 fi
 fi
-local ssh_port=$(sec_get_port)
-iptables -w 2 -C VPS-IN -p tcp --dport "$ssh_port" -j ACCEPT 2>/dev/null || iptables -w 2 -A VPS-IN -p tcp --dport "$ssh_port" -j ACCEPT
-if command -v ip6tables >/dev/null 2>&1; then
-ip6tables -w 2 -N VPS-IN 2>/dev/null || true
-ip6tables -w 2 -C INPUT -j VPS-IN 2>/dev/null || ip6tables -w 2 -I INPUT 1 -j VPS-IN 2>/dev/null || true
-ip6tables -w 2 -C VPS-IN -i lo -j ACCEPT 2>/dev/null || ip6tables -w 2 -A VPS-IN -i lo -j ACCEPT 2>/dev/null || true
-ip6tables -w 2 -C VPS-IN -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || ip6tables -w 2 -A VPS-IN -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
-local out_of_order6=0; ip6tables -S VPS-IN 2>/dev/null | awk '/--dport/ {d=1} /vps_blacklist6.*-j DROP/ {if(d) exit 1}' || out_of_order6=1
-if ! ip6tables -w 2 -C VPS-IN -p ipv6-icmp -j ACCEPT 2>/dev/null || \
-! ip6tables -w 2 -C VPS-IN -m set --match-set vps_blacklist6 src -j DROP 2>/dev/null || \
-[ "$out_of_order6" -eq 1 ]; then ip6tables -w 2 -D VPS-IN -m set --match-set vps_blacklist6 src -j DROP 2>/dev/null || true
-ip6tables -w 2 -D VPS-IN -m set --match-set vps_whitelist6 src -j ACCEPT 2>/dev/null || true
-ip6tables -w 2 -D VPS-IN -p ipv6-icmp -j ACCEPT 2>/dev/null || true
-local pos6=$(ip6tables -S VPS-IN 2>/dev/null | awk '/^-A/ {r++} /--dport/ {print r; exit}')
-if [ -n "$pos6" ]; then
-ip6tables -w 2 -I VPS-IN "$pos6" -m set --match-set vps_whitelist6 src -j ACCEPT 2>/dev/null || true
-ip6tables -w 2 -I VPS-IN "$pos6" -m set --match-set vps_blacklist6 src -j DROP 2>/dev/null || true
-ip6tables -w 2 -I VPS-IN "$pos6" -p ipv6-icmp -j ACCEPT 2>/dev/null || true
-else
-ip6tables -w 2 -A VPS-IN -p ipv6-icmp -j ACCEPT 2>/dev/null || true
-ip6tables -w 2 -A VPS-IN -m set --match-set vps_blacklist6 src -j DROP 2>/dev/null || true
-ip6tables -w 2 -A VPS-IN -m set --match-set vps_whitelist6 src -j ACCEPT 2>/dev/null || true
-fi
-fi
-ip6tables -w 2 -C VPS-IN -p tcp --dport "$ssh_port" -j ACCEPT 2>/dev/null || ip6tables -w 2 -A VPS-IN -p tcp --dport "$ssh_port" -j ACCEPT 2>/dev/null || true
-fi
+fw_docker
 }
-fw_save(){ require_root; mkdir -p /etc/iptables; iptables-save > /etc/iptables/rules.v4
-command -v ip6tables-save >/dev/null 2>&1 && ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true
-ipset save > /etc/iptables/ipset.rules 2>/dev/null || true
-if [ ! -f /etc/systemd/system/vps-firewall.service ]; then
-        cat > /etc/systemd/system/vps-firewall.service << 'EOF'
+fw_init(){ fw_apply "$@"
+}
+fw_heal(){ [ "$(id -u)" -eq 0 ] || return 0; [ -f "$VPS_FW_CONF" ] && return 0; iptables -L VPS-IN -n >/dev/null 2>&1 || return 0
+fw_apply >/dev/null 2>&1 && fw_save >/dev/null 2>&1 || true
+}
+fw_save(){ require_root; mkdir -p /etc/iptables; ipset save > /etc/iptables/ipset.rules 2>/dev/null || true; local changed=0
+local unit="/etc/systemd/system/vps-firewall.service"
+    local want=$(cat << 'EOF'
 [Unit]
-Description=VPS Native Firewall Persistence
-Before=network.target
+Description=VPS Native Firewall
+After=local-fs.target
+Before=network.target docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c 'which ipset >/dev/null && [ -f /etc/iptables/ipset.rules ] && ipset restore -exist < /etc/iptables/ipset.rules 2>/dev/null || true; [ -f /etc/iptables/rules.v4 ] && iptables-restore < /etc/iptables/rules.v4 2>/dev/null || true; [ -f /etc/iptables/rules.v6 ] && which ip6tables-restore >/dev/null && ip6tables-restore < /etc/iptables/rules.v6 2>/dev/null || true'
+ExecStartPre=-/bin/sh -c '[ -f /etc/iptables/ipset.rules ] && ipset restore -exist < /etc/iptables/ipset.rules'
+ExecStart=/usr/local/bin/vs fw_apply
 RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
 EOF
+)
+[ "$(cat "$unit" 2>/dev/null)" = "$want" ] || { printf '%s\n' "$want" > "$unit"; changed=1; }
+if command -v dockerd >/dev/null 2>&1; then
+local dropin="/etc/systemd/system/docker.service.d/10-vps-fw.conf"; local dw=$'[Service]\nExecStartPost=-/usr/local/bin/vs fw_apply'
+[ "$(cat "$dropin" 2>/dev/null)" = "$dw" ] || { mkdir -p "${dropin%/*}"; printf '%s\n' "$dw" > "$dropin"; changed=1; }
+fi
+if [ "$changed" -eq 1 ]; then
 systemctl daemon-reload 2>/dev/null || true; systemctl enable vps-firewall 2>/dev/null || true
 fi
-which netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save 2>/dev/null || true
+return 0
+}
+fw_install(){ require_root
+if ! fw_is_installed; then
+DEBIAN_FRONTEND=noninteractive apt-get update -y 2>/dev/null || true; DEBIAN_FRONTEND=noninteractive apt-get install -y iptables ipset
+fi
+fw_conf_load || fw_migrate; fw_apply; fw_save; printf "${CLR_GREEN}防火墙初始化完成${CLR_RESET}\n"
 }
 fw_get_ping(){
+if [ -f "$VPS_FW_CONF" ]; then
+local FW_MODE FW_PORTS FW_PING FW_DDOS; fw_conf_load || true; [ "$FW_PING" = "off" ] && echo "drop" || echo "accept"; return
+fi
 if iptables -w 2 -C VPS-IN -p icmp --icmp-type echo-request -j DROP 2>/dev/null; then
 echo "drop"
 else
@@ -947,6 +989,9 @@ echo "accept"
 fi
 }
 fw_get_ddos(){
+if [ -f "$VPS_FW_CONF" ]; then
+local FW_MODE FW_PORTS FW_PING FW_DDOS; fw_conf_load || true; echo "$FW_DDOS"; return
+fi
 if iptables -w 2 -S VPS-IN 2>/dev/null | grep -qE 'hashlimit-name vps_syn.*-j DROP|-p tcp --syn.*-j DROP'; then
 echo "on"
 else
@@ -1006,62 +1051,46 @@ printf "%s\n" "$ipt_rules" | awk -v ssh="$ssh_port" '
     }'
 printf " %s\n\n" "----------------------------------------------------"
 }
-fw_open(){ require_root; fw_init; local added=()
+fw_open(){ require_root; fw_conf_load || fw_migrate; local added=() p
 for p in "$@"; do
 if [[ ! "$p" =~ ^[0-9]+(:[0-9]+)?$ ]]; then
 printf "${CLR_RED}错误: 端口格式无效 (%s)${CLR_RESET}\n" "$p" >&2; continue
 fi
-iptables -w 2 -C VPS-IN -p tcp --dport "$p" -j ACCEPT 2>/dev/null || iptables -w 2 -A VPS-IN -p tcp --dport "$p" -j ACCEPT
-iptables -w 2 -C VPS-IN -p udp --dport "$p" -j ACCEPT 2>/dev/null || iptables -w 2 -A VPS-IN -p udp --dport "$p" -j ACCEPT
-if command -v ip6tables >/dev/null 2>&1; then
-ip6tables -w 2 -C VPS-IN -p tcp --dport "$p" -j ACCEPT 2>/dev/null || ip6tables -w 2 -A VPS-IN -p tcp --dport "$p" -j ACCEPT 2>/dev/null || true
-ip6tables -w 2 -C VPS-IN -p udp --dport "$p" -j ACCEPT 2>/dev/null || ip6tables -w 2 -A VPS-IN -p udp --dport "$p" -j ACCEPT 2>/dev/null || true
-fi
-added+=("$p")
+[[ " $FW_PORTS " == *" $p "* ]] || FW_PORTS="${FW_PORTS:+$FW_PORTS }$p"; added+=("$p")
 done
-fw_save
+fw_conf_save; fw_apply; fw_save
 if [ ${#added[@]} -gt 0 ]; then
 printf "${CLR_GREEN}已放行端口: %s${CLR_RESET}\n" "${added[*]}"
 fi
 }
-fw_close(){ require_root; local ssh_port=$(sec_get_port); local closed=()
+fw_close(){ require_root; fw_conf_load || fw_migrate; local ssh_port=$(sec_get_port); local closed=() p q keep hit
 for p in "$@"; do
+[ "$p" = "http" ] && p="80"; [ "$p" = "https" ] && p="443"
 if [ "$p" = "$ssh_port" ]; then
 printf "${CLR_YELLOW}跳过 SSH 端口 (%s)${CLR_RESET}\n" "$p" >&2; continue
 fi
-local lines=$( (iptables -S 2>/dev/null || true) | awk -v target="$p" '
-        /^-A (INPUT|VPS-IN)/ && /-j ACCEPT/ && /--dport/ {
-            for(i=1;i<=NF;i++) {
-                if($i=="--dport") {
-                    val=$(i+1)
-                    if(val==target || (target=="443" && val=="https") || (target=="80" && val=="http") || (target=="https" && val=="443") || (target=="http" && val=="80")) {
-                        print $0
-                    }
-                }
-            }
-        }')
-if [ -n "$lines" ]; then
-while read -r line; do
-[ -n "$line" ] && iptables -w 2 -D ${line#-A } 2>/dev/null || true
-[ -n "$line" ] && command -v ip6tables >/dev/null 2>&1 && ip6tables -w 2 -D ${line#-A } 2>/dev/null || true
-done <<< "$lines"
-closed+=("$p")
+keep=""; hit=0
+for q in $FW_PORTS; do
+if [ "$q" = "$p" ]; then
+hit=1
+else
+keep="${keep:+$keep }$q"
 fi
 done
-fw_save
+FW_PORTS="$keep"; [ "$hit" -eq 1 ] && closed+=("$p")
+done
+fw_conf_save; fw_apply; fw_save
 if [ ${#closed[@]} -gt 0 ]; then
 printf "${CLR_GREEN}已关闭端口: %s${CLR_RESET}\n" "${closed[*]}"
 else
 printf "${CLR_YELLOW}未找到指定开放端口${CLR_RESET}\n"
 fi
 }
-fw_open_all(){ require_root; iptables -w 2 -P INPUT ACCEPT
-command -v ip6tables >/dev/null 2>&1 && ip6tables -w 2 -P INPUT ACCEPT 2>/dev/null || true; fw_save
+fw_open_all(){ require_root; fw_conf_load || fw_migrate; FW_MODE="blacklist"; fw_conf_save; fw_apply; fw_save
 printf "${CLR_GREEN}已切换为黑名单模式 (默认放行)${CLR_RESET}\n"
 }
-fw_close_all(){ require_root; fw_init; iptables -w 2 -P INPUT DROP
-command -v ip6tables >/dev/null 2>&1 && ip6tables -w 2 -P INPUT DROP 2>/dev/null || true; fw_save
-printf "${CLR_GREEN}已切换为白名单模式 (默认拦截)${CLR_RESET}\n"
+fw_close_all(){ require_root; fw_conf_load || fw_migrate; FW_MODE="whitelist"; fw_conf_save; fw_apply; fw_save
+printf "${CLR_GREEN}已切换为白名单模式 (默认拦截, 含 Docker 发布端口)${CLR_RESET}\n"
 }
 fw_ban_ip(){ require_root; fw_init; local added=()
 for ip in "$@"; do
@@ -1102,71 +1131,27 @@ if [ ${#removed[@]} -gt 0 ]; then
 printf "${CLR_GREEN}已移除限制: %s${CLR_RESET}\n" "${removed[*]}"
 fi
 }
-fw_ping(){ require_root; fw_init; local state="${1:-toggle}"
+fw_ping(){ require_root; fw_conf_load || fw_migrate; local state="${1:-toggle}"
 if [ "$state" = "toggle" ]; then
-[ "$(fw_get_ping)" = "drop" ] && state="on" || state="off"
+[ "$FW_PING" = "off" ] && state="on" || state="off"
 fi
-if [ "$state" = "off" ]; then
-iptables -w 2 -C VPS-IN -p icmp --icmp-type echo-request -j DROP 2>/dev/null || iptables -w 2 -A VPS-IN -p icmp --icmp-type echo-request -j DROP
-if command -v ip6tables >/dev/null 2>&1; then
-ip6tables -w 2 -C VPS-IN -p ipv6-icmp --icmpv6-type echo-request -j DROP 2>/dev/null || ip6tables -w 2 -I VPS-IN 1 -p ipv6-icmp --icmpv6-type echo-request -j DROP 2>/dev/null || true
-fi
-else
-iptables -w 2 -D VPS-IN -p icmp --icmp-type echo-request -j DROP 2>/dev/null || true
-command -v ip6tables >/dev/null 2>&1 && ip6tables -w 2 -D VPS-IN -p ipv6-icmp --icmpv6-type echo-request -j DROP 2>/dev/null || true
-fi
-fw_save
+case "$state" in on|off) ;; *) printf "${CLR_RED}错误: 参数应为 on|off|toggle${CLR_RESET}\n" >&2; return 1 ;; esac
+FW_PING="$state"; fw_conf_save; fw_apply; fw_save
 }
-fw_ddos(){ require_root; fw_init; local state="${1:-toggle}"
+fw_ddos(){ require_root; fw_conf_load || fw_migrate; local state="${1:-toggle}"
 if [ "$state" = "toggle" ]; then
-[ "$(fw_get_ddos)" = "on" ] && state="off" || state="on"
+[ "$FW_DDOS" = "on" ] && state="off" || state="on"
 fi
-if [ "$state" = "on" ]; then
-iptables -w 2 -D VPS-IN -p tcp --syn -m limit --limit 500/s --limit-burst 100 -j ACCEPT 2>/dev/null || true
-iptables -w 2 -D VPS-IN -p udp -m limit --limit 3000/s --limit-burst 500 -j ACCEPT 2>/dev/null || true
-iptables -w 2 -D VPS-IN -p udp -m hashlimit --hashlimit-above 3000/s --hashlimit-burst 500 --hashlimit-mode srcip --hashlimit-name vps_udp -j DROP 2>/dev/null || true
-iptables -w 2 -C VPS-IN -p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn -j DROP 2>/dev/null || \
-iptables -w 2 -I VPS-IN 1 -p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn -j DROP
-if command -v ip6tables >/dev/null 2>&1; then
-ip6tables -w 2 -C VPS-IN -p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn6 -j DROP 2>/dev/null || \
-ip6tables -w 2 -I VPS-IN 1 -p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn6 -j DROP 2>/dev/null || true
-fi
-if iptables -w 2 -L DOCKER-USER -n >/dev/null 2>&1; then
-iptables -w 2 -D DOCKER-USER -p tcp --syn -m limit --limit 500/s --limit-burst 100 -j ACCEPT 2>/dev/null || true
-iptables -w 2 -D DOCKER-USER -p udp -m limit --limit 3000/s --limit-burst 500 -j ACCEPT 2>/dev/null || true
-iptables -w 2 -D DOCKER-USER -p udp -m hashlimit --hashlimit-above 3000/s --hashlimit-burst 500 --hashlimit-mode srcip --hashlimit-name vps_udp -j DROP 2>/dev/null || true
-iptables -w 2 -C DOCKER-USER -p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn -j DROP 2>/dev/null || \
-iptables -w 2 -I DOCKER-USER 1 -p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn -j DROP
-fi
-else
-iptables -w 2 -D VPS-IN -p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn -j DROP 2>/dev/null || true
-iptables -w 2 -D VPS-IN -p udp -m hashlimit --hashlimit-above 3000/s --hashlimit-burst 500 --hashlimit-mode srcip --hashlimit-name vps_udp -j DROP 2>/dev/null || true
-iptables -w 2 -D VPS-IN -p tcp --syn -m limit --limit 500/s --limit-burst 100 -j ACCEPT 2>/dev/null || true
-iptables -w 2 -D VPS-IN -p tcp --syn -j DROP 2>/dev/null || true
-iptables -w 2 -D VPS-IN -p udp -m limit --limit 3000/s --limit-burst 500 -j ACCEPT 2>/dev/null || true
-iptables -w 2 -D VPS-IN -p udp -j DROP 2>/dev/null || true
-if command -v ip6tables >/dev/null 2>&1; then
-ip6tables -w 2 -D VPS-IN -p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn6 -j DROP 2>/dev/null || true
-fi
-if iptables -w 2 -L DOCKER-USER -n >/dev/null 2>&1; then
-iptables -w 2 -D DOCKER-USER -p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn -j DROP 2>/dev/null || true
-iptables -w 2 -D DOCKER-USER -p udp -m hashlimit --hashlimit-above 3000/s --hashlimit-burst 500 --hashlimit-mode srcip --hashlimit-name vps_udp -j DROP 2>/dev/null || true
-iptables -w 2 -D DOCKER-USER -p tcp --syn -m limit --limit 500/s --limit-burst 100 -j ACCEPT 2>/dev/null || true
-iptables -w 2 -D DOCKER-USER -p tcp --syn -j DROP 2>/dev/null || true
-iptables -w 2 -D DOCKER-USER -p udp -m limit --limit 3000/s --limit-burst 500 -j ACCEPT 2>/dev/null || true
-iptables -w 2 -D DOCKER-USER -p udp -j DROP 2>/dev/null || true
-fi
-fi
-fw_save
+case "$state" in on|off) ;; *) printf "${CLR_RED}错误: 参数应为 on|off|toggle${CLR_RESET}\n" >&2; return 1 ;; esac
+FW_DDOS="$state"; fw_conf_save; fw_apply; fw_save
 }
-fw_reset(){ require_root; iptables -w 2 -P INPUT ACCEPT; iptables -w 2 -F VPS-IN 2>/dev/null || true
-if command -v ip6tables >/dev/null 2>&1; then
-ip6tables -w 2 -P INPUT ACCEPT 2>/dev/null || true; ip6tables -w 2 -F VPS-IN 2>/dev/null || true
-fi
-ipset flush vps_blacklist 2>/dev/null || true; ipset flush vps_whitelist 2>/dev/null || true
-ipset flush vps_blacklist6 2>/dev/null || true; ipset flush vps_whitelist6 2>/dev/null || true; fw_init; iptables -w 2 -P INPUT DROP
-command -v ip6tables >/dev/null 2>&1 && ip6tables -w 2 -P INPUT DROP 2>/dev/null || true; fw_save
-printf "${CLR_GREEN}防火墙规则已重置至初始状态 (IPv4/IPv6 双栈生效)${CLR_RESET}\n"
+fw_reset(){ require_root; local s
+for s in vps_blacklist vps_whitelist vps_blacklist6 vps_whitelist6; do
+ipset flush "$s" 2>/dev/null || true
+done
+FW_MODE="whitelist"; FW_PING="on"; FW_DDOS="off"; FW_PORTS=$(fw_published_ports | awk '!s[$1]++ { o=o (o?" ":"") $1 } END { print o }')
+fw_conf_save; fw_apply; fw_save; printf "${CLR_GREEN}防火墙规则已重置至初始状态 (IPv4/IPv6 双栈生效)${CLR_RESET}\n"
+[ -n "$FW_PORTS" ] && printf "${CLR_DIM}已保留运行中容器的发布端口: %s${CLR_RESET}\n" "$FW_PORTS" || true
 }
 ui_fw(){
 while true; do
@@ -1190,19 +1175,23 @@ case "$choice" in
 1)
 read -r -p "放行端口 (空格隔开/如 80 443 1000:2000, 回车取消): " port; [ -z "$port" ] && continue; fw_open $port; ;;
 2)
-local ssh_port=$(sec_get_port)
-local open_ports=$( (iptables -S 2>/dev/null || true) | awk -v ssh="$ssh_port" '
-                    /^-A (INPUT|VPS-IN)/ && /-j ACCEPT/ && /--dport/ {
-                        for(i=1;i<=NF;i++) {
-                            if($i=="--dport") {
-                                p=$(i+1)
-                                if(p=="http") p="80"
-                                if(p=="https") p="443"
-                                if(p!=ssh && !seen[p]++) ports=(ports?ports " ": "") p
+local ssh_port=$(sec_get_port); local open_ports=""
+if [ -f "$VPS_FW_CONF" ]; then
+local FW_MODE FW_PORTS FW_PING FW_DDOS; fw_conf_load || true; open_ports="$FW_PORTS"
+else
+open_ports=$( (iptables -S 2>/dev/null || true) | awk -v ssh="$ssh_port" '
+                        /^-A (INPUT|VPS-IN)/ && /-j ACCEPT/ && /--dport/ {
+                            for(i=1;i<=NF;i++) {
+                                if($i=="--dport") {
+                                    p=$(i+1)
+                                    if(p=="http") p="80"
+                                    if(p=="https") p="443"
+                                    if(p!=ssh && !seen[p]++) ports=(ports?ports " ": "") p
+                                }
                             }
                         }
-                    }
-                    END { print ports }')
+                        END { print ports }')
+fi
 if [ -z "$open_ports" ]; then
 printf "${CLR_YELLOW}当前无自定义开放端口 (SSH: %s 保护中禁止关闭)${CLR_RESET}\n" "$ssh_port"
 else
@@ -1467,13 +1456,13 @@ Core Commands:
   vs sec_lock_root        Disable root login completely (requires sudo user with key)
   vs sec_root_keyonly     Restrict root login to SSH key only (prohibit password)
   vs sec_unlock_root      Permit root login (password & key)
-  vs fw_open <port...>    Allow inbound TCP/UDP ports in VPS-IN chain
+  vs fw_open <port...>    Allow inbound ports (host & Docker published ports)
   vs fw_close <port...>   Close ports (SSH port is permanently protected)
   vs fw_ban_ip <ip...>    Block IP/CIDR in vps_blacklist ipset
   vs fw_unban_ip <ip...>  Unblock IP/CIDR from firewall sets
   vs fw_allow_ip <ip...>  Whitelist IP/CIDR in vps_whitelist ipset
   vs fw_open_all          Switch to Blacklist Mode (INPUT ACCEPT)
-  vs fw_close_all         Switch to Whitelist Mode (INPUT DROP)
+  vs fw_close_all         Switch to Whitelist Mode (INPUT & Docker DROP)
   vs docker_install       Install Docker Engine and Docker Compose plugin
   vs docker_cleanup       Prune unused containers, images, and builder caches
   vs app_install <id> [p] Deploy application from market (e.g. vs app_install npm 81)
@@ -1522,8 +1511,10 @@ f2b_active=true; f2b_banned=$(fail2ban-client status sshd 2>/dev/null | awk '/Cu
 fi
 fi
 local fw_mode="unconfigured"; local fw_ports=""; local ping_allow=true; local ddos_protect=false
-if iptables -L VPS-IN -n >/dev/null 2>&1; then
-local ipt_s=$(iptables -S 2>/dev/null || true)
+if [ -f "$VPS_FW_CONF" ]; then
+local FW_MODE FW_PORTS FW_PING FW_DDOS; fw_conf_load || true; fw_mode="$FW_MODE"; [ "$FW_PING" = "off" ] && ping_allow=false
+[ "$FW_DDOS" = "on" ] && ddos_protect=true; fw_ports=$(awk '{for(i=1;i<=NF;i++) printf "%s%s", (i>1?", ":""), $i}' <<< "$FW_PORTS")
+elif iptables -L VPS-IN -n >/dev/null 2>&1; then local ipt_s=$(iptables -S 2>/dev/null || true)
 if grep -q '^-P INPUT DROP' <<< "$ipt_s"; then
 fw_mode="whitelist"
 else
@@ -1635,9 +1626,10 @@ fi
 }
 docker_install(){ require_root
 if docker_is_installed; then
-printf "Docker 已安装 (%s)\n" "$(docker -v 2>/dev/null)"; docker_is_active || systemctl enable --now docker; return 0
+printf "Docker 已安装 (%s)\n" "$(docker -v 2>/dev/null)"; docker_is_active || systemctl enable --now docker
+fw_is_initialized && { fw_apply; fw_save; } || true; return 0
 fi
-curl -fsSL https://get.docker.com | sh; systemctl enable --now docker
+curl -fsSL https://get.docker.com | sh; systemctl enable --now docker; fw_is_initialized && { fw_apply; fw_save; } || true
 }
 docker_ps(){
 if ! docker_is_installed; then
