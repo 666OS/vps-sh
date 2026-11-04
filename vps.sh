@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="6722e5b"; VPS_BUILD_TIME="2026-11-04 15:44"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="b9f15be"; VPS_BUILD_TIME="2026-11-04 15:59"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -37,20 +37,24 @@ local mem_out=$(free -m 2>/dev/null | awk '
 local load=$(awk '{print $1", "$2", "$3}' /proc/loadavg 2>/dev/null || uptime | awk -F'load average: ' '{print $2}')
 local bbr=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知"); local ipv4="${VPS_IPV4_CACHE:-}"
 if [ -z "$ipv4" ]; then
-local k_ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')
+local k_ip=$( (ip -4 route get 1.1.1.1 2>/dev/null || true) | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')
 if [ -n "$k_ip" ] && [[ ! "$k_ip" =~ ^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.|169\.254\.) ]]; then
 ipv4="$k_ip"
 else
 ipv4=$(curl -s4m2 https://api.ipify.org 2>/dev/null || curl -s4m2 https://icanhazip.com 2>/dev/null || echo "离线")
 fi
-[ "$ipv4" != "离线" ] && export VPS_IPV4_CACHE="$ipv4"
+if [ "$ipv4" != "离线" ]; then
+export VPS_IPV4_CACHE="$ipv4"
+fi
 fi
 local ipv6="${VPS_IPV6_CACHE:-}"
 if [ -z "$ipv6" ]; then
-ipv6=$(ip -6 route get 2606:4700:4700::1111 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')
-[ -n "$ipv6" ] || ipv6=$(ip -6 addr show scope global -deprecated 2>/dev/null | awk '/inet6 [23]/ {split($2, a, "/"); print a[1]; exit}')
+ipv6=$( (ip -6 route get 2606:4700:4700::1111 2>/dev/null || true) | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')
+[ -n "$ipv6" ] || ipv6=$( (ip -6 addr show scope global -deprecated 2>/dev/null || true) | awk '/inet6 [23]/ {split($2, a, "/"); print a[1]; exit}')
 [ -n "$ipv6" ] || ipv6=$(curl -s6m1 https://api64.ipify.org 2>/dev/null || echo "无")
-[ -n "$ipv6" ] && [ "$ipv6" != "无" ] && export VPS_IPV6_CACHE="$ipv6"
+if [ -n "$ipv6" ] && [ "$ipv6" != "无" ]; then
+export VPS_IPV6_CACHE="$ipv6"
+fi
 fi
 printf "${CLR_BOLD}系统:${CLR_RESET}     %s\n" "$os ($kernel)"; printf "${CLR_BOLD}处理器:${CLR_RESET}   %s (%s 核心)\n" "$cpu" "$cores"
 printf "${CLR_BOLD}运行:${CLR_RESET}     在线: %s | ${CLR_BOLD}系统负载:${CLR_RESET} %s\n" "$uptime" "$load"
@@ -291,11 +295,13 @@ while true; do
 clear; local cur_ip=$(echo "${SSH_CLIENT:-${SSH_CONNECTION:-}}" | awk '{print $1}'); local nt_status="未安装"
 command -v nexttrace >/dev/null 2>&1 && nt_status="已就绪"; local local_ip="${VPS_IPV4_CACHE:-}"
 if [ -z "$local_ip" ]; then
-local_ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')
+local_ip=$( (ip -4 route get 1.1.1.1 2>/dev/null || true) | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')
 if [ -z "$local_ip" ] || [[ "$local_ip" =~ ^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.|169\.254\.) ]]; then
 local_ip=$(curl -s4m2 https://api.ipify.org 2>/dev/null || curl -s4m2 https://icanhazip.com 2>/dev/null || echo "未知")
 fi
-[ "$local_ip" != "未知" ] && export VPS_IPV4_CACHE="$local_ip"
+if [ "$local_ip" != "未知" ]; then
+export VPS_IPV4_CACHE="$local_ip"
+fi
 fi
 printf "${CLR_BOLD}--- 回程路由诊断 ---${CLR_RESET}\n"; printf "${CLR_DIM}本机 IPv4:${CLR_RESET}   %s\n" "$local_ip"
 printf "${CLR_DIM}连接来源:${CLR_RESET}   %s\n" "${cur_ip:-本地控制台}"; printf "${CLR_DIM}NextTrace:${CLR_RESET}  %s\n\n" "$nt_status"
@@ -879,10 +885,15 @@ fi
 local ssh_port=$(sec_get_port); local ipt_rules=$(iptables -S 2>/dev/null || true)
 local in_policy=$(awk '/^-P INPUT/ {print $3}' <<< "$ipt_rules"); local policy_desc="默认丢弃 (DROP)"
 [ "$in_policy" = "ACCEPT" ] && policy_desc="默认放行 (ACCEPT)"
-local bans=$(ipset list -t vps_blacklist 2>/dev/null | awk '/Number of entries:/ {print $NF}')
-local allows=$(ipset list -t vps_whitelist 2>/dev/null | awk '/Number of entries:/ {print $NF}'); local ping_status="允许"
-grep -qE '^-A VPS-IN -p icmp .*-j DROP' <<< "$ipt_rules" && ping_status="已拦截"; local ddos_status="已关闭"
-grep -qE '^-A VPS-IN -p tcp .*(SYN|--syn) -j DROP' <<< "$ipt_rules" && ddos_status="已开启"
+local bans=$( (ipset list -t vps_blacklist 2>/dev/null || true) | awk '/Number of entries:/ {print $NF}')
+local allows=$( (ipset list -t vps_whitelist 2>/dev/null || true) | awk '/Number of entries:/ {print $NF}'); local ping_status="允许"
+if grep -qE '^-A VPS-IN -p icmp .*-j DROP' <<< "$ipt_rules"; then
+ping_status="已拦截"
+fi
+local ddos_status="已关闭"
+if grep -qE '^-A VPS-IN -p tcp .*(SYN|--syn) -j DROP' <<< "$ipt_rules"; then
+ddos_status="已开启"
+fi
 printf "${CLR_BOLD}入站:${CLR_RESET} %s | ${CLR_BOLD}Ping:${CLR_RESET} %s | ${CLR_BOLD}防DDoS:${CLR_RESET} %s\n" "$policy_desc" "$ping_status" "$ddos_status"
 printf "${CLR_BOLD}黑名单:${CLR_RESET} %s IP | ${CLR_BOLD}白名单:${CLR_RESET} %s IP\n\n" "${bans:-0}" "${allows:-0}"
 printf " ${CLR_DIM}%-9s %-18s %s${CLR_RESET}\n" "协议" "目标/端口" "说明"; printf " %s\n" "----------------------------------------------------"
