@@ -11,8 +11,8 @@ curl -fsSL https://raw.githubusercontent.com/666OS/vps-sh/main/vps.sh | bash
 
 ## AI 协同 (AI-Native)
 
-* **诊断快照 (`vs ai`)**：生成包含系统运行状态与可用修复指令的高密度纯文本（~250 Token），可直接复制发给大模型（ChatGPT / Claude / DeepSeek）以获取准确的官方指令建议。
-* **Agent 自动化 (`vs ai --json`)**：输出单行结构化 JSON，供自主智能体（Cursor、Antigravity、Claude Code 等）极速读取机器状态，配合内置安全护栏执行非交互闭环运维。
+* **诊断快照 (`vs ai`)**：生成包含系统运行状态与可用修复指令的高密度纯文本，可直接复制发给 AI大模型以获取准确的官方指令建议。
+* **Agent 自动化 (`vs ai --json`)**：输出单行结构化 JSON，供自主智能体极速读取机器状态，配合内置安全护栏执行非交互闭环运维。
 * **语义指令标准**：根目录提供标准 [llms.txt](llms.txt)，供大模型直接理解完整的 CLI 指令集与安全规范。
 
 ---

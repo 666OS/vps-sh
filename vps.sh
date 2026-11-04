@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="133cd18"; VPS_BUILD_TIME="2026-11-04 17:30"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="7ce04e6"; VPS_BUILD_TIME="2026-11-04 18:40"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -1311,6 +1311,44 @@ read -r -p "请选择: " choice
 case "$choice" in 1) ops_update && read -r -p "按回车返回..." ;; 2) sys_uninstall ;; 0|*) return ;; esac
 done
 }
+vs_help(){
+    cat << 'EOF'
+VPS-SH (vs) - Single-file Linux Operations & Docker Engine
+
+Usage:
+  vs                      Interactive terminal UI (requires TTY)
+  vs ai                   AI system diagnostic snapshot & command manifest
+  vs ai --json            Machine-readable JSON snapshot (for AI Agents)
+  vs <command> [args...]  Execute deterministic non-interactive CLI primitive
+
+Core Commands:
+  vs sys_swap <mb>        Configure or resize swap file (e.g. vs sys_swap 2048)
+  vs sys_tune             Enable BBR and kernel TCP/memory performance tuning
+  vs sys_clean            Purge apt cache and vacuum journal logs
+  vs net_dns_foreign      Configure foreign public DNS (1.1.1.1, 8.8.8.8)
+  vs net_dns_china        Configure domestic public DNS (223.5.5.5, 119.29.29.29)
+  vs net_prio_v4          Prioritize IPv4 outbound routing
+  vs net_prio_v6          Prioritize IPv6 outbound routing
+  vs sec_port <port>      Change SSH port (validates syntax before restart)
+  vs sec_lock_pwd         Disable password authentication (key-only)
+  vs sec_unlock_pwd       Enable password authentication
+  vs fw_open <port...>    Allow inbound TCP/UDP ports in VPS-IN chain
+  vs fw_close <port...>   Close ports (SSH port is permanently protected)
+  vs fw_ban_ip <ip...>    Block IP/CIDR in vps_blacklist ipset
+  vs fw_unban_ip <ip...>  Unblock IP/CIDR from firewall sets
+  vs fw_open_all          Switch to Blacklist Mode (INPUT ACCEPT)
+  vs fw_close_all         Switch to Whitelist Mode (INPUT DROP)
+  vs docker_install       Install Docker Engine and Docker Compose plugin
+  vs docker_cleanup       Prune unused containers, images, and builder caches
+  vs app_install <id> [p] Deploy application from market (e.g. vs app_install npm 81)
+  vs app_update <id>      Update and recreate application container
+  vs app_uninstall <id>   Stop container and optionally purge data directory
+
+Online Manuals:
+  Engine:      https://raw.githubusercontent.com/666OS/vps-sh/main/llms.txt
+  App Catalog: https://raw.githubusercontent.com/666OS/vps-apps/main/llms.txt
+EOF
+}
 ai_snapshot(){ local mode="${1:-text}"; local os=$(grep -oP '(?<=PRETTY_NAME=")[^"]*' /etc/os-release 2>/dev/null || uname -sr)
 local kernel=$(uname -r); local arch=$(uname -m); local cores=$(nproc 2>/dev/null || echo 1)
 local load=$(awk '{print $1", "$2", "$3}' /proc/loadavg 2>/dev/null || uptime 2>/dev/null | awk -F'load average: ' '{print $2}')
@@ -1386,7 +1424,7 @@ local apps_json="[]"
 if [ -n "$installed_apps" ]; then
 apps_json="[$(sed 's/[^ ]*/"&"/g; s/ /, /g' <<< "$installed_apps")]"
 fi
-printf '{"sys":{"os":"%s","kernel":"%s","arch":"%s","cores":%s,"load":"%s","mem_used_mb":%d,"mem_total_mb":%d,"mem_pct":%s,"swap_used_mb":%d,"swap_total_mb":%d,"swap_pct":%s,"disk":"%s"},"net":{"ipv4":"%s","bbr":"%s"},"sec":{"ssh_port":%s,"pwd_auth":"%s","root_login":"%s","f2b_status":"%s","f2b_banned":%d},"fw":{"mode":"%s","open_ports":%s,"ping":"%s","ddos":"%s"},"apps":{"docker":"%s","installed":%s}}\n' \
+printf '{"sys":{"os":"%s","kernel":"%s","arch":"%s","cores":%s,"load":"%s","mem_used_mb":%d,"mem_total_mb":%d,"mem_pct":%s,"swap_used_mb":%d,"swap_total_mb":%d,"swap_pct":%s,"disk":"%s"},"net":{"ipv4":"%s","bbr":"%s"},"sec":{"ssh_port":%s,"pwd_auth":"%s","root_login":"%s","f2b_status":"%s","f2b_banned":%d},"fw":{"mode":"%s","open_ports":%s,"ping":"%s","ddos":"%s"},"apps":{"docker":"%s","installed":%s,"catalog":"https://raw.githubusercontent.com/666OS/vps-apps/main/llms.txt"}}\n' \
 "$os" "$kernel" "$arch" "$cores" "$load" "$m_u" "$m_t" "$m_p" "$s_u" "$s_t" "$s_p" "$disk" "$ipv4" "$bbr" "$ssh_port" "$pwd_auth" "$root_login" "$f2b_status" "${f2b_banned:-0}" "$fw_mode" "$ports_json" "$ping_st" "$ddos_st" "$docker_st" "$apps_json"
 else
 printf "${CLR_BOLD}=== VPS-SH 系统快照 (AI 诊断) ===${CLR_RESET}\n"; printf "系统: %s (%s) | %s 核心 | 负载: %s\n" "$os" "$arch" "$cores" "$load"
@@ -1401,6 +1439,7 @@ printf " - 网络配置: vs net_dns_foreign (国外DNS) | vs net_dns_china (国�
 printf " - 安全加固: vs sec_port <port> (修改SSH端口) | vs sec_lock_pwd (禁密码仅密钥) | vs sec_unlock_pwd (允许密码)\n"
 printf " - 防火墙: vs fw_open <port...> (放行端口) | vs fw_close <port...> (关闭端口) | vs fw_ban_ip <ip> (封禁IP) | vs fw_unban_ip <ip> (移除限制) | vs fw_open_all (黑名单模式) | vs fw_close_all (白名单模式)\n"
 printf " - 容器与应用: vs docker_install (安装Docker) | vs docker_cleanup (清理容器镜像) | vs app_install <id> [port] (部署应用) | vs app_update <id> (更新应用)\n"
+printf " - 应用模板库: https://raw.githubusercontent.com/666OS/vps-apps/main/llms.txt\n"
 fi
 }
 docker_is_installed(){ command -v docker >/dev/null 2>&1
@@ -2165,18 +2204,23 @@ case "$choice" in 1) ui_sys ;; 2) ui_net ;; 3) ui_sec ;; 4) ui_ops ;; 5) ui_app_
 done
 }
 case "${1:-}" in
-rm|un|uninstall) sys_uninstall ;; up|update) shift; ops_update "$@" ;; app|apps|market) ui_app_engine ;; docker|d) ui_docker ;;
-ai) shift; ai_snapshot "$@" ;;
+-h|--help|help) vs_help ;; rm|un|uninstall) sys_uninstall ;; up|update) shift; ops_update "$@" ;; app|apps|market) ui_app_engine ;;
+docker|d) ui_docker ;; ai) shift; ai_snapshot "$@" ;;
 *)
 sys_shortcut 2>/dev/null || true
 if [ $# -eq 0 ]; then
+if [ "$0" = "bash" ] || [ "$0" = "sh" ] || [ "$0" = "-bash" ] || [ "$0" = "-sh" ]; then
 if [ -t 1 ] && [ ! -t 0 ] && [ -r /dev/tty ]; then
-exec < /dev/tty; elif [ ! -t 0 ]; then exit 0
+exec < /dev/tty
+fi
+fi
+if [ ! -t 0 ] || [ ! -t 1 ]; then
+vs_help; exit 0
 fi
 ui
 else
 if [ "$(type -t "$1" 2>/dev/null)" = "function" ]; then
-case "$1" in sys_*|net_*|sec_*|fw_*|ops_*|docker_*|app_*|ai_*|ui*) "$@" ;; *) echo "未知命令: $1" >&2; exit 1 ;; esac
+case "$1" in sys_*|net_*|sec_*|fw_*|ops_*|docker_*|app_*|ai_*|ui*|vs_*) "$@" ;; *) echo "未知命令: $1" >&2; exit 1 ;; esac
 else
 echo "未知命令: $1" >&2; exit 1
 fi
