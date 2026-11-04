@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="af05596"; VPS_BUILD_TIME="2026-11-04 16:23"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="de50652"; VPS_BUILD_TIME="2026-11-04 16:40"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -924,22 +924,25 @@ printf "%s\n" "$ipt_rules" | awk -v ssh="$ssh_port" '
     }'
 printf " %s\n\n" "----------------------------------------------------"
 }
-fw_open(){ require_root; fw_init
+fw_open(){ require_root; fw_init; local added=()
 for p in "$@"; do
 if [[ ! "$p" =~ ^[0-9]+(:[0-9]+)?$ ]]; then
 printf "${CLR_RED}错误: 端口格式无效 (%s)${CLR_RESET}\n" "$p" >&2; continue
 fi
 iptables -w 2 -C VPS-IN -p tcp --dport "$p" -j ACCEPT 2>/dev/null || iptables -w 2 -A VPS-IN -p tcp --dport "$p" -j ACCEPT
-iptables -w 2 -C VPS-IN -p udp --dport "$p" -j ACCEPT 2>/dev/null || iptables -w 2 -A VPS-IN -p udp --dport "$p" -j ACCEPT
+iptables -w 2 -C VPS-IN -p udp --dport "$p" -j ACCEPT 2>/dev/null || iptables -w 2 -A VPS-IN -p udp --dport "$p" -j ACCEPT; added+=("$p")
 done
 fw_save
+if [ ${#added[@]} -gt 0 ]; then
+printf "${CLR_GREEN}已放行端口: %s${CLR_RESET}\n" "${added[*]}"
+fi
 }
-fw_close(){ require_root; local ssh_port=$(sec_get_port)
+fw_close(){ require_root; local ssh_port=$(sec_get_port); local closed=()
 for p in "$@"; do
 if [ "$p" = "$ssh_port" ]; then
-echo "跳过 SSH 端口 ($p)" >&2; continue
+printf "${CLR_YELLOW}跳过 SSH 端口 (%s)${CLR_RESET}\n" "$p" >&2; continue
 fi
-(iptables -S 2>/dev/null || true) | awk -v target="$p" '
+local lines=$( (iptables -S 2>/dev/null || true) | awk -v target="$p" '
         /^-A (INPUT|VPS-IN)/ && /-j ACCEPT/ && /--dport/ {
             for(i=1;i<=NF;i++) {
                 if($i=="--dport") {
@@ -949,33 +952,51 @@ fi
                     }
                 }
             }
-        }' | while read -r line; do
+        }')
+if [ -n "$lines" ]; then
+while read -r line; do
 [ -n "$line" ] && iptables -w 2 -D ${line#-A } 2>/dev/null || true
-done
+done <<< "$lines"
+closed+=("$p")
+fi
 done
 fw_save
+if [ ${#closed[@]} -gt 0 ]; then
+printf "${CLR_GREEN}已关闭端口: %s${CLR_RESET}\n" "${closed[*]}"
+else
+printf "${CLR_YELLOW}未找到指定开放端口${CLR_RESET}\n"
+fi
 }
-fw_open_all(){ require_root; iptables -w 2 -P INPUT ACCEPT; fw_save
+fw_open_all(){ require_root; iptables -w 2 -P INPUT ACCEPT; fw_save; printf "${CLR_GREEN}已切换为黑名单模式 (默认放行)${CLR_RESET}\n"
 }
-fw_close_all(){ require_root; fw_init; iptables -w 2 -P INPUT DROP; fw_save
+fw_close_all(){ require_root; fw_init; iptables -w 2 -P INPUT DROP; fw_save; printf "${CLR_GREEN}已切换为白名单模式 (默认拦截)${CLR_RESET}\n"
 }
-fw_ban_ip(){ require_root; fw_init
+fw_ban_ip(){ require_root; fw_init; local added=()
 for ip in "$@"; do
-ipset del vps_whitelist "$ip" -exist 2>/dev/null || true; ipset add vps_blacklist "$ip" -exist 2>/dev/null || true
+ipset del vps_whitelist "$ip" -exist 2>/dev/null || true; ipset add vps_blacklist "$ip" -exist 2>/dev/null || true; added+=("$ip")
 done
 fw_save
+if [ ${#added[@]} -gt 0 ]; then
+printf "${CLR_GREEN}已加入黑名单: %s${CLR_RESET}\n" "${added[*]}"
+fi
 }
-fw_allow_ip(){ require_root; fw_init
+fw_allow_ip(){ require_root; fw_init; local added=()
 for ip in "$@"; do
-ipset del vps_blacklist "$ip" -exist 2>/dev/null || true; ipset add vps_whitelist "$ip" -exist 2>/dev/null || true
+ipset del vps_blacklist "$ip" -exist 2>/dev/null || true; ipset add vps_whitelist "$ip" -exist 2>/dev/null || true; added+=("$ip")
 done
 fw_save
+if [ ${#added[@]} -gt 0 ]; then
+printf "${CLR_GREEN}已加入白名单: %s${CLR_RESET}\n" "${added[*]}"
+fi
 }
-fw_unban_ip(){ require_root
+fw_unban_ip(){ require_root; local removed=()
 for ip in "$@"; do
-ipset del vps_blacklist "$ip" -exist 2>/dev/null || true; ipset del vps_whitelist "$ip" -exist 2>/dev/null || true
+ipset del vps_blacklist "$ip" -exist 2>/dev/null || true; ipset del vps_whitelist "$ip" -exist 2>/dev/null || true; removed+=("$ip")
 done
 fw_save
+if [ ${#removed[@]} -gt 0 ]; then
+printf "${CLR_GREEN}已移除限制: %s${CLR_RESET}\n" "${removed[*]}"
+fi
 }
 fw_ping(){ require_root; fw_init; local state="${1:-toggle}"
 if [ "$state" = "toggle" ]; then
@@ -1017,8 +1038,9 @@ fi
 fi
 fw_save
 }
-fw_reset(){ require_root; fw_close_all; ipset flush vps_blacklist 2>/dev/null || true; ipset flush vps_whitelist 2>/dev/null || true
-fw_init; fw_save
+fw_reset(){ require_root; iptables -w 2 -P INPUT ACCEPT; iptables -w 2 -F VPS-IN 2>/dev/null || true
+ipset flush vps_blacklist 2>/dev/null || true; ipset flush vps_whitelist 2>/dev/null || true; fw_init; iptables -w 2 -P INPUT DROP; fw_save
+printf "${CLR_GREEN}防火墙规则已重置至初始状态${CLR_RESET}\n"
 }
 ui_fw(){
 while true; do
@@ -1038,7 +1060,52 @@ printf "${CLR_CYAN}[4]${CLR_RESET} 切换为白名单模式 (默认拦截)\n"; p
 printf "${CLR_CYAN}[6]${CLR_RESET} 放行 IP (白名单)\n"; printf "${CLR_CYAN}[7]${CLR_RESET} 移除 IP 限制\n"
 printf "${CLR_CYAN}[8]${CLR_RESET} %s\n" "$ping_action"; printf "${CLR_CYAN}[9]${CLR_RESET} %s\n" "$ddos_action"
 printf "${CLR_CYAN}[10]${CLR_RESET} 重置规则\n"; printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"; read -r -p "请选择: " choice
-case "$choice" in 1) read -r -p "放行端口 (空格隔开/如 80 443 1000:2000): " port && [ -n "$port" ] && fw_open $port ;; 2) read -r -p "关闭端口 (空格隔开): " port && [ -n "$port" ] && fw_close $port ;; 3) fw_open_all ;; 4) fw_close_all ;; 5) read -r -p "封禁 IP/网段: " ip && [ -n "$ip" ] && fw_ban_ip $ip ;; 6) read -r -p "放行 IP/网段: " ip && [ -n "$ip" ] && fw_allow_ip $ip ;; 7) read -r -p "移除 IP: " ip && [ -n "$ip" ] && fw_unban_ip $ip ;; 8) fw_ping toggle; continue ;; 9) fw_ddos toggle; continue ;; 10) fw_reset ;; 0|*) return ;; esac
+case "$choice" in
+1)
+read -r -p "放行端口 (空格隔开/如 80 443 1000:2000, 回车取消): " port; [ -z "$port" ] && continue; fw_open $port; ;;
+2)
+local ssh_port=$(sec_get_port)
+local open_ports=$( (iptables -S 2>/dev/null || true) | awk -v ssh="$ssh_port" '
+                    /^-A (INPUT|VPS-IN)/ && /-j ACCEPT/ && /--dport/ {
+                        for(i=1;i<=NF;i++) {
+                            if($i=="--dport") {
+                                p=$(i+1)
+                                if(p=="http") p="80"
+                                if(p=="https") p="443"
+                                if(p!=ssh && !seen[p]++) ports=(ports?ports " ": "") p
+                            }
+                        }
+                    }
+                    END { print ports }')
+if [ -z "$open_ports" ]; then
+printf "${CLR_YELLOW}当前无自定义开放端口 (SSH: %s 保护中禁止关闭)${CLR_RESET}\n" "$ssh_port"
+else
+printf "${CLR_DIM}可关闭端口: %s${CLR_RESET}\n" "$open_ports"; read -r -p "关闭端口 (空格隔开, 回车取消): " port; [ -z "$port" ] && continue; fw_close $port
+fi
+;; 3) fw_open_all ;; 4) fw_close_all ;;
+5)
+read -r -p "封禁 IP/网段 (空格隔开, 回车取消): " ip; [ -z "$ip" ] && continue; fw_ban_ip $ip; ;;
+6)
+read -r -p "放行 IP/网段 (空格隔开, 回车取消): " ip; [ -z "$ip" ] && continue; fw_allow_ip $ip; ;;
+7)
+local b_ips=$( (ipset list vps_blacklist 2>/dev/null || true) | awk '/^Members:/ {m=1; next} m && NF {printf "%s ", $1}')
+local w_ips=$( (ipset list vps_whitelist 2>/dev/null || true) | awk '/^Members:/ {m=1; next} m && NF {printf "%s ", $1}')
+b_ips="${b_ips% }"; w_ips="${w_ips% }"
+if [ -z "$b_ips" ] && [ -z "$w_ips" ]; then
+printf "${CLR_DIM}当前无任何手动黑/白名单 IP${CLR_RESET}\n"
+else
+[ -n "$b_ips" ] && printf "  ${CLR_RED}[黑名单]${CLR_RESET} %s\n" "$b_ips"
+[ -n "$w_ips" ] && printf "  ${CLR_GREEN}[白名单]${CLR_RESET} %s\n" "$w_ips"; read -r -p "移除 IP/网段 (空格隔开, 回车取消): " ip
+[ -z "$ip" ] && continue; fw_unban_ip $ip
+fi
+;; 8) fw_ping toggle; continue ;; 9) fw_ddos toggle; continue ;;
+10)
+read -r -p "确认重置所有防火墙规则至初始状态? (y/N, 回车取消): " confirm
+case "$confirm" in
+[yY][eE][sS]|[yY]) fw_reset ;; *) continue ;;
+esac
+;; 0|*) return ;;
+esac
 read -r -p "按回车返回..."
 fi
 done
