@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="ae04b88"; VPS_BUILD_TIME="2026-11-04 22:22"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="0661895"; VPS_BUILD_TIME="2026-11-04 22:34"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -621,12 +621,11 @@ root_desc="${CLR_YELLOW}仅限密钥${CLR_RESET}"
 fi
 local sudoers=$(sec_list_sudoers | sort -u | tr '\n' ' ' | sed 's/ $//'); local user_desc="${CLR_DIM}无${CLR_RESET}"
 [ -n "$sudoers" ] && user_desc="${CLR_CYAN}${sudoers} (sudo)${CLR_RESET}"; local fw_desc="${CLR_DIM}未配置${CLR_RESET}"
+if fw_is_initialized; then
 if [ -f "$VPS_FW_CONF" ]; then
 local FW_MODE FW_PORTS FW_PING FW_DDOS; fw_conf_load || true
 [ "$FW_MODE" = "whitelist" ] && fw_desc="${CLR_GREEN}白名单模式 (默认拦截)${CLR_RESET}" || fw_desc="${CLR_YELLOW}黑名单模式 (默认放行)${CLR_RESET}"
-elif iptables -L VPS-IN -n >/dev/null 2>&1; then
-if iptables -S INPUT 2>/dev/null | grep -q '^-P INPUT DROP'; then
-fw_desc="${CLR_GREEN}白名单模式 (默认拦截)${CLR_RESET}"
+elif iptables -S INPUT 2>/dev/null | grep -q '^-P INPUT DROP'; then fw_desc="${CLR_GREEN}白名单模式 (默认拦截)${CLR_RESET}"
 else
 fw_desc="${CLR_YELLOW}黑名单模式 (默认放行)${CLR_RESET}"
 fi
@@ -873,7 +872,7 @@ done
 }
 VPS_FW_CONF="/etc/vps-sh/fw.conf"; fw_is_installed(){ command -v iptables >/dev/null 2>&1 && command -v ipset >/dev/null 2>&1
 }
-fw_is_initialized(){ [ -f "$VPS_FW_CONF" ] || iptables -L VPS-IN -n >/dev/null 2>&1
+fw_is_initialized(){ fw_is_installed || return 1; [ -f "$VPS_FW_CONF" ] || iptables -L VPS-IN -n >/dev/null 2>&1
 }
 fw_conflict(){
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
@@ -934,9 +933,13 @@ for r in "-p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 10
 done
 local f
 for f in rules.v4 rules.v6; do
-[ -f "/etc/iptables/$f" ] && mv -f "/etc/iptables/$f" "/etc/iptables/$f.vps-bak" 2>/dev/null || true
+[ -f "/etc/iptables/$f" ] && awk '/VPS-IN/ {f=1} END {exit !f}' "/etc/iptables/$f" && mv -f "/etc/iptables/$f" "/etc/iptables/$f.vps-bak" 2>/dev/null || true
 done
 fw_conf_save
+}
+fw_ready(){ fw_is_installed || { printf "${CLR_RED}错误: 未安装 iptables/ipset，请先执行 vs fw_install${CLR_RESET}\n" >&2; return 1
+}
+fw_conf_load || fw_migrate
 }
 fw_rules(){ local v="$1" s="" bl="vps_blacklist" wl="vps_whitelist" icmp="-p icmp --icmp-type" p; local ssh=$(sec_get_port)
 [ "$v" = "6" ] && { s="6"; bl="vps_blacklist6"; wl="vps_whitelist6"; icmp="-p ipv6-icmp --icmpv6-type"; }
@@ -1107,7 +1110,7 @@ printf "%s\n" "$ipt_rules" | awk -v ssh="$ssh_port" '
     }'
 printf " %s\n\n" "----------------------------------------------------"
 }
-fw_open(){ require_root; fw_conf_load || fw_migrate; local added=() p
+fw_open(){ require_root; fw_ready || return 1; local added=() p
 for p in "$@"; do
 if [[ ! "$p" =~ ^[0-9]+(:[0-9]+)?$ ]]; then
 printf "${CLR_RED}错误: 端口格式无效 (%s)${CLR_RESET}\n" "$p" >&2; continue
@@ -1119,7 +1122,7 @@ if [ ${#added[@]} -gt 0 ]; then
 printf "${CLR_GREEN}已放行端口: %s${CLR_RESET}\n" "${added[*]}"
 fi
 }
-fw_close(){ require_root; fw_conf_load || fw_migrate; local ssh_port=$(sec_get_port); local closed=() p q keep hit
+fw_close(){ require_root; fw_ready || return 1; local ssh_port=$(sec_get_port); local closed=() p q keep hit
 for p in "$@"; do
 [ "$p" = "http" ] && p="80"; [ "$p" = "https" ] && p="443"
 if [ "$p" = "$ssh_port" ]; then
@@ -1142,13 +1145,13 @@ else
 printf "${CLR_YELLOW}未找到指定开放端口${CLR_RESET}\n"
 fi
 }
-fw_open_all(){ require_root; fw_conf_load || fw_migrate; FW_MODE="blacklist"; fw_conf_save; fw_apply || return 1; fw_save
+fw_open_all(){ require_root; fw_ready || return 1; FW_MODE="blacklist"; fw_conf_save; fw_apply || return 1; fw_save
 printf "${CLR_GREEN}已切换为黑名单模式 (默认放行)${CLR_RESET}\n"
 }
-fw_close_all(){ require_root; fw_conf_load || fw_migrate; FW_MODE="whitelist"; fw_conf_save; fw_apply || return 1; fw_save
+fw_close_all(){ require_root; fw_ready || return 1; FW_MODE="whitelist"; fw_conf_save; fw_apply || return 1; fw_save
 printf "${CLR_GREEN}已切换为白名单模式 (默认拦截, 含 Docker 发布端口)${CLR_RESET}\n"
 }
-fw_ban_ip(){ require_root; fw_conf_load || fw_migrate; fw_apply || return 1; local added=()
+fw_ban_ip(){ require_root; fw_ready || return 1; fw_apply || return 1; local added=()
 for ip in "$@"; do
 local b_set="vps_blacklist"; local w_set="vps_whitelist"
 if [[ "$ip" =~ : ]]; then
@@ -1161,7 +1164,7 @@ if [ ${#added[@]} -gt 0 ]; then
 printf "${CLR_GREEN}已加入黑名单: %s${CLR_RESET}\n" "${added[*]}"
 fi
 }
-fw_allow_ip(){ require_root; fw_conf_load || fw_migrate; fw_apply || return 1; local added=()
+fw_allow_ip(){ require_root; fw_ready || return 1; fw_apply || return 1; local added=()
 for ip in "$@"; do
 local b_set="vps_blacklist"; local w_set="vps_whitelist"
 if [[ "$ip" =~ : ]]; then
@@ -1174,7 +1177,7 @@ if [ ${#added[@]} -gt 0 ]; then
 printf "${CLR_GREEN}已加入白名单: %s${CLR_RESET}\n" "${added[*]}"
 fi
 }
-fw_unban_ip(){ require_root; fw_conf_load || fw_migrate; fw_apply || return 1; local removed=()
+fw_unban_ip(){ require_root; fw_ready || return 1; fw_apply || return 1; local removed=()
 for ip in "$@"; do
 local b_set="vps_blacklist"; local w_set="vps_whitelist"
 if [[ "$ip" =~ : ]]; then
@@ -1187,21 +1190,21 @@ if [ ${#removed[@]} -gt 0 ]; then
 printf "${CLR_GREEN}已移除限制: %s${CLR_RESET}\n" "${removed[*]}"
 fi
 }
-fw_ping(){ require_root; fw_conf_load || fw_migrate; local state="${1:-toggle}"
+fw_ping(){ require_root; fw_ready || return 1; local state="${1:-toggle}"
 if [ "$state" = "toggle" ]; then
 [ "$FW_PING" = "off" ] && state="on" || state="off"
 fi
 case "$state" in on|off) ;; *) printf "${CLR_RED}错误: 参数应为 on|off|toggle${CLR_RESET}\n" >&2; return 1 ;; esac
 FW_PING="$state"; fw_conf_save; fw_apply || return 1; fw_save
 }
-fw_ddos(){ require_root; fw_conf_load || fw_migrate; local state="${1:-toggle}"
+fw_ddos(){ require_root; fw_ready || return 1; local state="${1:-toggle}"
 if [ "$state" = "toggle" ]; then
 [ "$FW_DDOS" = "on" ] && state="off" || state="on"
 fi
 case "$state" in on|off) ;; *) printf "${CLR_RED}错误: 参数应为 on|off|toggle${CLR_RESET}\n" >&2; return 1 ;; esac
 FW_DDOS="$state"; fw_conf_save; fw_apply || return 1; fw_save
 }
-fw_reset(){ require_root; local s
+fw_reset(){ require_root; fw_ready || return 1; local s
 for s in vps_blacklist vps_whitelist vps_blacklist6 vps_whitelist6; do
 ipset flush "$s" 2>/dev/null || true
 done
@@ -1584,6 +1587,7 @@ f2b_active=true; f2b_banned=$(fail2ban-client status sshd 2>/dev/null | awk '/Cu
 fi
 fi
 local fw_mode="unconfigured"; local fw_ports=""; local ping_allow=true; local ddos_protect=false
+if fw_is_initialized; then
 if [ -f "$VPS_FW_CONF" ]; then
 local FW_MODE FW_PORTS FW_PING FW_DDOS; fw_conf_load || true; fw_mode="$FW_MODE"; [ "$FW_PING" = "off" ] && ping_allow=false
 [ "$FW_DDOS" = "on" ] && ddos_protect=true; fw_ports="$FW_PORTS"; elif iptables -L VPS-IN -n >/dev/null 2>&1; then
@@ -1594,19 +1598,20 @@ else
 fw_mode="blacklist"
 fi
 fw_ports=$(awk -v ssh="$ssh_port" '
-        /^-A (INPUT|VPS-IN)/ && /-j ACCEPT/ && /--dport/ {
-            for(i=1;i<=NF;i++) {
-                if($i=="--dport") {
-                    p=$(i+1)
-                    if(p=="http") p="80"
-                    if(p=="https") p="443"
-                    if(!seen[p]++) ports=(ports?ports " ": "") p
+            /^-A (INPUT|VPS-IN)/ && /-j ACCEPT/ && /--dport/ {
+                for(i=1;i<=NF;i++) {
+                    if($i=="--dport") {
+                        p=$(i+1)
+                        if(p=="http") p="80"
+                        if(p=="https") p="443"
+                        if(!seen[p]++) ports=(ports?ports " ": "") p
+                    }
                 }
             }
-        }
-        END { print ports }' <<< "$ipt_s")
+            END { print ports }' <<< "$ipt_s")
 grep -qE '^-A VPS-IN -p icmp .*-j DROP' <<< "$ipt_s" && ping_allow=false
 grep -qE 'hashlimit-name vps_syn.*DROP|-p tcp .*(SYN|--syn).*DROP' <<< "$ipt_s" && ddos_protect=true
+fi
 fi
 local docker_installed=false docker_active=false d_ver="" d_run=0 d_img=0
 if command -v docker >/dev/null 2>&1; then

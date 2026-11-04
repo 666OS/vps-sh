@@ -57,7 +57,7 @@ All commands are non-interactive (except sec_gen_key, which is TTY-only), idempo
 - `vs fw_unban_ip <ip...>`: Remove IP or CIDR from firewall sets.
 - `vs fw_ping [on|off|toggle]`: Enable or disable ICMP echo replies.
 - `vs fw_ddos [on|off|toggle]`: Enable SYN flood rate limiting against DDoS (drops floods without port bypass).
-- `vs fw_reset`: Safely reset firewall rules to baseline (retains running Docker published ports).
+- `vs fw_reset`: Safely reset firewall rules to baseline (host-level opened ports are cleared; only running Docker/app ports retained).
 
 ### 5. Docker & Container Lifecycle (`docker_*`)
 - `vs docker_install`: Install Docker Engine and Docker Compose plugin.
