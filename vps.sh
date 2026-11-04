@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="aee7c22"; VPS_BUILD_TIME="2026-11-04 16:07"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="af05596"; VPS_BUILD_TIME="2026-11-04 16:23"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -562,9 +562,9 @@ local sudoers=$(sec_list_sudoers | sort -u | tr '\n' ' ' | sed 's/ $//'); local 
 [ -n "$sudoers" ] && user_desc="${CLR_CYAN}${sudoers} (sudo)${CLR_RESET}"; local fw_desc="${CLR_DIM}未配置${CLR_RESET}"
 if iptables -L VPS-IN -n >/dev/null 2>&1; then
 if iptables -S INPUT 2>/dev/null | grep -q '^-P INPUT DROP'; then
-fw_desc="${CLR_GREEN}白名单模式${CLR_RESET}"
+fw_desc="${CLR_GREEN}白名单模式 (默认拦截)${CLR_RESET}"
 else
-fw_desc="${CLR_YELLOW}黑名单模式${CLR_RESET}"
+fw_desc="${CLR_YELLOW}黑名单模式 (默认放行)${CLR_RESET}"
 fi
 fi
 local f2b_desc="${CLR_DIM}未安装${CLR_RESET}"
@@ -883,8 +883,8 @@ if ! fw_is_initialized; then
 printf "${CLR_BOLD}状态:${CLR_RESET} ${CLR_YELLOW}未初始化${CLR_RESET}\n"; return 0
 fi
 local ssh_port=$(sec_get_port); local ipt_rules=$(iptables -S 2>/dev/null || true)
-local in_policy=$(awk '/^-P INPUT/ {print $3}' <<< "$ipt_rules"); local policy_desc="默认丢弃 (DROP)"
-[ "$in_policy" = "ACCEPT" ] && policy_desc="默认放行 (ACCEPT)"
+local in_policy=$(awk '/^-P INPUT/ {print $3}' <<< "$ipt_rules"); local policy_desc="${CLR_GREEN}白名单模式 (默认拦截)${CLR_RESET}"
+[ "$in_policy" = "ACCEPT" ] && policy_desc="${CLR_YELLOW}黑名单模式 (默认放行)${CLR_RESET}"
 local bans=$( (ipset list -t vps_blacklist 2>/dev/null || true) | awk '/Number of entries:/ {print $NF}')
 local allows=$( (ipset list -t vps_whitelist 2>/dev/null || true) | awk '/Number of entries:/ {print $NF}'); local ping_status="允许"
 if grep -qE '^-A VPS-IN -p icmp .*-j DROP' <<< "$ipt_rules"; then
@@ -894,8 +894,8 @@ local ddos_status="已关闭"
 if grep -qE '^-A VPS-IN -p tcp .*(SYN|--syn) -j DROP' <<< "$ipt_rules"; then
 ddos_status="已开启"
 fi
-printf "${CLR_BOLD}入站:${CLR_RESET} %s | ${CLR_BOLD}Ping:${CLR_RESET} %s | ${CLR_BOLD}防DDoS:${CLR_RESET} %s\n" "$policy_desc" "$ping_status" "$ddos_status"
-printf "${CLR_BOLD}黑名单:${CLR_RESET} %s IP | ${CLR_BOLD}白名单:${CLR_RESET} %s IP\n\n" "${bans:-0}" "${allows:-0}"
+printf "${CLR_BOLD}入站策略:${CLR_RESET} %s | ${CLR_BOLD}Ping:${CLR_RESET} %s | ${CLR_BOLD}防DDoS:${CLR_RESET} %s\n" "$policy_desc" "$ping_status" "$ddos_status"
+printf "${CLR_BOLD}手动黑名单:${CLR_RESET} %s IP | ${CLR_BOLD}手动白名单:${CLR_RESET} %s IP\n\n" "${bans:-0}" "${allows:-0}"
 printf " ${CLR_DIM}%-9s %-18s %s${CLR_RESET}\n" "协议" "目标/端口" "说明"; printf " %s\n" "----------------------------------------------------"
 printf " %-9s %-18s %s\n" "all" "127.0.0.1 (lo)" "本地回环"; printf " %-9s %-18s %s\n" "all" "ESTABLISHED" "已建连接"
 printf " %-9s %-18s %s\n" "tcp" "$ssh_port" "SSH 保护"
@@ -957,8 +957,7 @@ fw_save
 }
 fw_open_all(){ require_root; iptables -w 2 -P INPUT ACCEPT; fw_save
 }
-fw_close_all(){ require_root; iptables -w 2 -P INPUT ACCEPT; iptables -w 2 -F INPUT; iptables -w 2 -F VPS-IN 2>/dev/null || true
-iptables -w 2 -X VPS-IN 2>/dev/null || true; fw_init; iptables -w 2 -P INPUT DROP; fw_save
+fw_close_all(){ require_root; fw_init; iptables -w 2 -P INPUT DROP; fw_save
 }
 fw_ban_ip(){ require_root; fw_init
 for ip in "$@"; do
@@ -1034,11 +1033,11 @@ case "$choice" in 1) fw_install && read -r -p "按回车返回..." ;; 0|*) retur
 else
 local ping_action="禁 Ping: 开启"; [ "$(fw_get_ping)" = "drop" ] && ping_action="禁 Ping: 关闭"; local ddos_action="防 DDoS 限流: 开启"
 [ "$(fw_get_ddos)" = "on" ] && ddos_action="防 DDoS 限流: 关闭"; printf "${CLR_CYAN}[1]${CLR_RESET} 放行端口\n"
-printf "${CLR_CYAN}[2]${CLR_RESET} 关闭端口\n"; printf "${CLR_CYAN}[3]${CLR_RESET} 放行全部端口\n"; printf "${CLR_CYAN}[4]${CLR_RESET} 关闭全部端口\n"
-printf "${CLR_CYAN}[5]${CLR_RESET} 封禁 IP (黑名单)\n"; printf "${CLR_CYAN}[6]${CLR_RESET} 放行 IP (白名单)\n"
-printf "${CLR_CYAN}[7]${CLR_RESET} 移除 IP 限制\n"; printf "${CLR_CYAN}[8]${CLR_RESET} %s\n" "$ping_action"
-printf "${CLR_CYAN}[9]${CLR_RESET} %s\n" "$ddos_action"; printf "${CLR_CYAN}[10]${CLR_RESET} 重置规则\n"
-printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"; read -r -p "请选择: " choice
+printf "${CLR_CYAN}[2]${CLR_RESET} 关闭端口\n"; printf "${CLR_CYAN}[3]${CLR_RESET} 切换为黑名单模式 (默认放行)\n"
+printf "${CLR_CYAN}[4]${CLR_RESET} 切换为白名单模式 (默认拦截)\n"; printf "${CLR_CYAN}[5]${CLR_RESET} 封禁 IP (黑名单)\n"
+printf "${CLR_CYAN}[6]${CLR_RESET} 放行 IP (白名单)\n"; printf "${CLR_CYAN}[7]${CLR_RESET} 移除 IP 限制\n"
+printf "${CLR_CYAN}[8]${CLR_RESET} %s\n" "$ping_action"; printf "${CLR_CYAN}[9]${CLR_RESET} %s\n" "$ddos_action"
+printf "${CLR_CYAN}[10]${CLR_RESET} 重置规则\n"; printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"; read -r -p "请选择: " choice
 case "$choice" in 1) read -r -p "放行端口 (空格隔开/如 80 443 1000:2000): " port && [ -n "$port" ] && fw_open $port ;; 2) read -r -p "关闭端口 (空格隔开): " port && [ -n "$port" ] && fw_close $port ;; 3) fw_open_all ;; 4) fw_close_all ;; 5) read -r -p "封禁 IP/网段: " ip && [ -n "$ip" ] && fw_ban_ip $ip ;; 6) read -r -p "放行 IP/网段: " ip && [ -n "$ip" ] && fw_allow_ip $ip ;; 7) read -r -p "移除 IP: " ip && [ -n "$ip" ] && fw_unban_ip $ip ;; 8) fw_ping toggle; continue ;; 9) fw_ddos toggle; continue ;; 10) fw_reset ;; 0|*) return ;; esac
 read -r -p "按回车返回..."
 fi
