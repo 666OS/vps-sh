@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="f0fa6db"; VPS_BUILD_TIME="2026-11-04 11:36"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="a5b9088"; VPS_BUILD_TIME="2026-11-04 12:22"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -1513,14 +1513,15 @@ curl -fsSLm 10 "$VPS_APP_FEED/apps/$name/compose.yaml"
 app_meta(){ local name="$1"; app_valid_name "$name" || return 1; local cache="${VPS_CACHE_DIR:-/tmp}/catalog.json"
 if [ -s "$cache" ]; then
 local entry=$(awk -F'"' -v target="$name" '
-        /"id":/ { id=$4; title=""; port=""; tag=""; desc=""; auth="" }
+        /"id":/ { id=$4; title=""; port=""; tag=""; desc=""; auth=""; url="" }
         /"name":/ { title=$4 }
         /"port":/ { port=$4 }
         /"tag":/ { tag=$4 }
         /"desc":/ { desc=$4 }
         /"auth":/ { auth=$4 }
+        /"url":/ { url=$4 }
         /}/ && id==target {
-            print title "|" (port != "" ? port : "-") "|" (tag != "" ? tag : desc) "|" desc "|" auth;
+            print title "|" (port != "" ? port : "-") "|" (tag != "" ? tag : desc) "|" desc "|" auth "|" url;
             exit;
         }' "$cache" 2>/dev/null || true)
 if [ -n "$entry" ]; then
@@ -1544,6 +1545,7 @@ local local_entry=$(awk '
             if (k == "tag") tag = $0;
             if (k == "desc") desc = $0;
             if (k == "auth") auth = $0;
+            if (k == "url") url = $0;
         }
         port == "" {
             if (match($0, /\$\{APP_PORT:-[0-9]+\}/)) {
@@ -1562,7 +1564,7 @@ local local_entry=$(awk '
         }
         END {
             if (title != "") {
-                print title "|" (port != "" ? port : "-") "|" (tag != "" ? tag : desc) "|" desc "|" auth;
+                print title "|" (port != "" ? port : "-") "|" (tag != "" ? tag : desc) "|" desc "|" auth "|" url;
                 exit 0;
             }
             exit 1;
@@ -1587,7 +1589,8 @@ local a=$(echo "$meta" | cut -d'|' -f5); [ -n "$a" ] && { echo "$a"; return 0; }
 fi
 echo ""
 }
-app_install(){ require_root; local name="$1"; local port="${2:-}"; local host="${3:-0.0.0.0}"; [ "$host" = "127.0.0.1" ] || host="0.0.0.0"
+app_install(){ require_root; local name="$1"; local port="${2:-}"; local host="${3:-0.0.0.0}"; local token="${4:-}"
+[ "$host" = "127.0.0.1" ] || host="0.0.0.0"
 if ! app_valid_name "$name"; then
 printf "${CLR_RED}错误: 非法应用名称${CLR_RESET}\n" >&2; return 1
 fi
@@ -1611,8 +1614,14 @@ local gen_pwd=""
 if grep -q '\${APP_PASSWORD' "$dir/compose.yaml" 2>/dev/null; then
 gen_pwd=$(LC_ALL=C tr -dc 'a-zA-Z0-9' < /dev/urandom 2>/dev/null | head -c 16 || openssl rand -hex 8 2>/dev/null || date +%s%N | head -c 16)
 fi
+if [ -z "$token" ] && grep -q '\${TUNNEL_TOKEN' "$dir/compose.yaml" 2>/dev/null; then
+if [ -t 0 ]; then
+printf "${CLR_CYAN}请输入 Cloudflare Tunnel Token (回车跳过稍后配置): ${CLR_RESET}"; read -r token
+fi
+fi
 { printf "APP_HOST=%s\n" "$host"; [ -n "$port" ] && [ "$port" != "-" ] && printf "APP_PORT=%s\n" "$port"
-[ -n "$gen_pwd" ] && printf "APP_PASSWORD=%s\n" "$gen_pwd"; } > "$dir/.env"; chmod 600 "$dir/.env"
+[ -n "$gen_pwd" ] && printf "APP_PASSWORD=%s\n" "$gen_pwd"; [ -n "$token" ] && printf "TUNNEL_TOKEN=%s\n" "$token"; } > "$dir/.env"
+chmod 600 "$dir/.env"
 if (cd "$dir" && docker compose up -d); then
 if [ "$host" = "0.0.0.0" ] && [ -n "$port" ] && [ "$port" != "-" ] && fw_is_initialized 2>/dev/null; then
 fw_open "$port" 2>/dev/null || true
@@ -1651,20 +1660,26 @@ local b=$(printf "%s" "$raw_text" | wc -c | tr -d " "); local w=$(( (m + b) / 2 
 printf "  ${CLR_CYAN}%s${CLR_RESET} %s%s%s%s" "$num" "$name" "$tag_str" "$col_badge" "$padding"
 }
 ui_app_install_single(){ local app="$1"; local meta=$(app_meta "$app" 2>/dev/null || true); local title="$app"; local default_port="8080"
-local desc=""; local auth=""
+local desc=""; local auth=""; local url=""
 if [ -n "$meta" ]; then
 title=$(echo "$meta" | cut -d'|' -f1); default_port=$(echo "$meta" | cut -d'|' -f2); desc=$(echo "$meta" | cut -d'|' -f4)
-[ -z "$desc" ] && desc=$(echo "$meta" | cut -d'|' -f3); auth=$(echo "$meta" | cut -d'|' -f5)
+[ -z "$desc" ] && desc=$(echo "$meta" | cut -d'|' -f3); auth=$(echo "$meta" | cut -d'|' -f5); url=$(echo "$meta" | cut -d'|' -f6)
 fi
 local port="$default_port"; local host="0.0.0.0"; local target_dir="/opt/vps-sh/apps/$app"
 while true; do
 clear; local mode_desc="${CLR_GREEN}公网直接访问 (0.0.0.0)${CLR_RESET} · 自动放行防火墙"
 [ "$host" = "127.0.0.1" ] && mode_desc="${CLR_YELLOW}本地反代模式 (127.0.0.1)${CLR_RESET} · 不暴露公网"
-printf -- "${CLR_BOLD}--- 安装: %s ---${CLR_RESET}\n\n" "$title"; [ -n "$desc" ] && printf "  ${CLR_DIM}说明:${CLR_RESET} %s\n" "$desc"
+[ "$port" = "-" ] && mode_desc="本地/出站模式 · 无需暴露公网端口"; printf -- "${CLR_BOLD}--- 安装: %s ---${CLR_RESET}\n\n" "$title"
+[ -n "$desc" ] && printf "  ${CLR_DIM}说明:${CLR_RESET} %s\n" "$desc"; [ -n "$url" ] && printf "  ${CLR_DIM}链接:${CLR_RESET} %s\n" "$url"
 printf "  ${CLR_DIM}端口:${CLR_RESET} %s\n" "$port"; printf "  ${CLR_DIM}网络:${CLR_RESET} %b\n" "$mode_desc"
 [ -n "$auth" ] && printf "  ${CLR_DIM}初始凭据:${CLR_RESET} %s\n" "$auth"; printf "  ${CLR_DIM}路径:${CLR_RESET} %s\n\n" "$target_dir"
+if [ "$port" != "-" ]; then
 printf "${CLR_CYAN}[Enter]${CLR_RESET} 立即部署    "; printf "${CLR_CYAN}[p]${CLR_RESET} 修改端口    "
-printf "${CLR_CYAN}[h]${CLR_RESET} 切换网络    "; printf "${CLR_DIM}[0] 取消${CLR_RESET}\n\n"; read -r -p "请选择: " choice
+printf "${CLR_CYAN}[h]${CLR_RESET} 切换网络    "; printf "${CLR_DIM}[0] 取消${CLR_RESET}\n\n"
+else
+printf "${CLR_CYAN}[Enter]${CLR_RESET} 立即部署    "; printf "${CLR_DIM}[0] 取消${CLR_RESET}\n\n"
+fi
+read -r -p "请选择: " choice
 case "$choice" in
 ""|[yY]|[yY][eE][sS]|1)
 if [ -n "$port" ] && [ "$port" != "-" ] && app_port_in_use "$port"; then
@@ -1673,11 +1688,15 @@ fi
 echo; printf "正在拉取并编排 %s...\n\n" "$title"
 if app_install "$app" "$port" "$host"; then
 printf "\n${CLR_GREEN}✓ 部署完成${CLR_RESET}\n"
-if [ "$host" = "0.0.0.0" ] && [ -n "$port" ] && [ "$port" != "-" ]; then
+if [ -n "$port" ] && [ "$port" != "-" ]; then
+if [ "$host" = "0.0.0.0" ]; then
 local ip=$(curl -fsSLm 2 https://api.ipify.org 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo "IP")
 printf "  ${CLR_DIM}访问地址:${CLR_RESET} http://%s:%s\n" "$ip" "$port"
 else
 printf "  ${CLR_DIM}本地地址:${CLR_RESET} http://127.0.0.1:%s (供反向代理使用)\n" "$port"
+fi
+else
+[ -n "$url" ] && printf "  ${CLR_DIM}管理控制台:${CLR_RESET} %s\n" "$url"
 fi
 local active_auth=$(app_get_auth "$app"); [ -n "$active_auth" ] && printf "  ${CLR_DIM}初始凭据:${CLR_RESET} %s\n" "$active_auth"
 if [[ "$active_auth" =~ (日志|log|logs) ]]; then
@@ -1690,7 +1709,7 @@ printf "\n${CLR_RED}部署失败，请检查 Docker 日志${CLR_RESET}\n"
 fi
 echo; read -r -p "按回车返回..."; return 0; ;;
 p|P)
-read -r -p "请输入映射端口 [$port]: " input_port
+[ "$port" = "-" ] && continue; read -r -p "请输入映射端口 [$port]: " input_port
 if [ -n "$input_port" ]; then
 if [[ ! "$input_port" =~ ^[0-9]+$ ]] || [ "$input_port" -lt 1 ] || [ "$input_port" -gt 65535 ]; then
 printf "${CLR_RED}端口必须为 1-65535 之间的数字${CLR_RESET}\n"; sleep 1
@@ -1700,6 +1719,7 @@ fi
 fi
 ;;
 h|H)
+[ "$port" = "-" ] && continue
 if [ "$host" = "0.0.0.0" ]; then
 host="127.0.0.1"
 else
@@ -1715,9 +1735,10 @@ ui_app_manage_single(){ local name="$1"; local st=$(app_status "$name")
 if [ "$st" = "未安装" ]; then
 ui_app_install_single "$name"; return 0
 fi
-local meta=$(app_meta "$name" 2>/dev/null || true); local title="$name"; local desc="自定义应用"
+local meta=$(app_meta "$name" 2>/dev/null || true); local title="$name"; local desc="自定义应用"; local url=""
 if [ -n "$meta" ]; then
 title=$(echo "$meta" | cut -d'|' -f1); desc=$(echo "$meta" | cut -d'|' -f4); [ -z "$desc" ] && desc=$(echo "$meta" | cut -d'|' -f3)
+url=$(echo "$meta" | cut -d'|' -f6)
 fi
 local target_dir="/opt/vps-sh/apps/$name"
 while true; do
@@ -1726,13 +1747,23 @@ local auth=$(app_get_auth "$name"); local net_desc="${host} (公网直接访问)
 [ "$host" = "127.0.0.1" ] && net_desc="${host} (本地反代模式) · 不向外网暴露"; local st_clr="$CLR_DIM"; [ "$st" = "运行中" ] && st_clr="$CLR_GREEN"
 [ "$st" = "部分运行" ] && st_clr="$CLR_YELLOW"; [ "$st" = "启动异常" ] && st_clr="$CLR_RED"; [ "$st" = "已停止" ] && st_clr="$CLR_RED"
 printf -- "${CLR_BOLD}--- 应用详情 ---${CLR_RESET}\n\n"; printf "  ${CLR_DIM}应用:${CLR_RESET} %s\n" "$name"
-printf "  ${CLR_DIM}状态:${CLR_RESET} %b%s%b\n" "$st_clr" "$st" "$CLR_RESET"; printf "  ${CLR_DIM}端口:${CLR_RESET} %s\n" "$port"
-printf "  ${CLR_DIM}网络:${CLR_RESET} %b\n" "$net_desc"; [ -n "$auth" ] && printf "  ${CLR_DIM}初始凭据:${CLR_RESET} %s\n" "$auth"
-printf "  ${CLR_DIM}数据:${CLR_RESET} %s/data\n" "$target_dir"; printf "  ${CLR_DIM}说明:${CLR_RESET} %s\n\n" "$desc"
-local act_toggle="[2] 停止"; [ "$st" = "已停止" ] && act_toggle="[2] 启动"
+printf "  ${CLR_DIM}状态:${CLR_RESET} %b%s%b\n" "$st_clr" "$st" "$CLR_RESET"
+if [ "$port" != "-" ]; then
+printf "  ${CLR_DIM}端口:${CLR_RESET} %s\n" "$port"; printf "  ${CLR_DIM}网络:${CLR_RESET} %b\n" "$net_desc"
+else
+printf "  ${CLR_DIM}网络:${CLR_RESET} 本地/出站模式 · 无需暴露公网端口\n"
+fi
+[ -n "$auth" ] && printf "  ${CLR_DIM}初始凭据:${CLR_RESET} %s\n" "$auth"; [ -n "$url" ] && printf "  ${CLR_DIM}链接:${CLR_RESET} %s\n" "$url"
+[ -d "$target_dir/data" ] && printf "  ${CLR_DIM}数据:${CLR_RESET} %s/data\n" "$target_dir"
+printf "  ${CLR_DIM}说明:${CLR_RESET} %s\n\n" "$desc"; local act_toggle="[2] 停止"; [ "$st" = "已停止" ] && act_toggle="[2] 启动"
 printf "${CLR_CYAN}[1]${CLR_RESET} 重启    ${CLR_CYAN}%s${CLR_RESET}    ${CLR_CYAN}[3]${CLR_RESET} 日志\n" "$act_toggle"
 printf "${CLR_CYAN}[4]${CLR_RESET} 更新    ${CLR_CYAN}[5]${CLR_RESET} 卸载    ${CLR_CYAN}[6]${CLR_RESET} 编辑配置\n\n"
-printf "${CLR_CYAN}[p]${CLR_RESET} 修改端口    ${CLR_CYAN}[h]${CLR_RESET} 切换网络    ${CLR_DIM}[0] 返回${CLR_RESET}\n\n"; read -r -p "请选择: " choice
+if [ "$port" != "-" ]; then
+printf "${CLR_CYAN}[p]${CLR_RESET} 修改端口    ${CLR_CYAN}[h]${CLR_RESET} 切换网络    ${CLR_DIM}[0] 返回${CLR_RESET}\n\n"
+else
+printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"
+fi
+read -r -p "请选择: " choice
 case "$choice" in
 1)
 app_restart "$name"; read -r -p "按回车返回..."; ;;
