@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="de66b17"; VPS_BUILD_TIME="2026-11-04 12:51"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="a4c7fbd"; VPS_BUILD_TIME="2026-11-04 13:32"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -1440,7 +1440,7 @@ app_stop(){ app_valid_name "$1" || return 1; local dir="/opt/vps-sh/apps/$1"; [ 
 (cd "$dir" && docker compose stop)
 }
 app_restart(){ app_valid_name "$1" || return 1; local dir="/opt/vps-sh/apps/$1"; [ -d "$dir" ] || return 1
-(cd "$dir" && docker compose restart 2>/dev/null || docker compose up -d)
+(cd "$dir" && docker compose up -d --force-recreate)
 }
 app_update(){ app_valid_name "$1" || return 1; local dir="/opt/vps-sh/apps/$1"; [ -d "$dir" ] || return 1
 (cd "$dir" && docker compose pull && docker compose up -d)
@@ -1797,7 +1797,7 @@ fi
 local compose_file="$target_dir/compose.yaml"; [ -f "$compose_file" ] || compose_file="$target_dir/docker-compose.yml"
 "$editor" "$compose_file"; echo; read -r -p "配置已保存，是否重新编排以生效改动? (y/N): " reload_cf
 if [[ "$reload_cf" =~ ^[yY] ]]; then
-(cd "$target_dir" && docker compose up -d)
+(cd "$target_dir" && docker compose up -d --force-recreate)
 printf "${CLR_GREEN}已重新编排生效${CLR_RESET}\n"; read -r -p "按回车返回..."
 fi
 ;;
