@@ -17,7 +17,7 @@ curl -fsSL https://raw.githubusercontent.com/666OS/vps-sh/main/vps.sh | bash
 
 ## CLI Operations Manual (Deterministic Primitives)
 
-All commands are non-interactive, idempotent, and exit with status 0 on success.
+All commands are non-interactive (except sec_gen_key, which is TTY-only), idempotent, and exit with status 0 on success.
 
 ### 1. System Operations (`sys_*`)
 - `vs sys_swap <mb>`: Create or resize swap memory (e.g. `vs sys_swap 2048`).
@@ -56,7 +56,7 @@ All commands are non-interactive, idempotent, and exit with status 0 on success.
 - `vs fw_allow_ip <ip...>`: Add IP or CIDR to `vps_whitelist` ipset.
 - `vs fw_unban_ip <ip...>`: Remove IP or CIDR from firewall sets.
 - `vs fw_ping [on|off|toggle]`: Enable or disable ICMP echo replies.
-- `vs fw_ddos [on|off|toggle]`: Enable SYN/UDP rate limiting against DDoS (drops floods without port bypass).
+- `vs fw_ddos [on|off|toggle]`: Enable SYN flood rate limiting against DDoS (drops floods without port bypass).
 - `vs fw_reset`: Safely reset firewall rules to baseline (retains running Docker published ports).
 
 ### 5. Docker & Container Lifecycle (`docker_*`)

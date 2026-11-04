@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="4c1ca8e"; VPS_BUILD_TIME="2026-11-04 22:05"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="f80e81a"; VPS_BUILD_TIME="2026-11-04 22:16"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -466,8 +466,10 @@ local u="${1:-root}"; local h="/root"
 if [ "$u" != "root" ]; then
 id "$u" >/dev/null 2>&1 || return 1; h="/home/$u"
 fi
-local tmp_dir=$(mktemp -d /run/vps-key.XXXXXX 2>/dev/null || mktemp -d /tmp/vps-key.XXXXXX); chmod 700 "$tmp_dir"
-local priv="$tmp_dir/id_ed25519"; local pub="$tmp_dir/id_ed25519.pub"
+local tmp_dir; tmp_dir=$(mktemp -d /run/vps-key.XXXXXX 2>/dev/null) || { printf "${CLR_RED}错误: 无法在 /run (内存) 创建临时目录${CLR_RESET}\n" >&2
+return 1
+}
+trap "rm -rf '$tmp_dir'" EXIT INT TERM HUP; chmod 700 "$tmp_dir"; local priv="$tmp_dir/id_ed25519"; local pub="$tmp_dir/id_ed25519.pub"
 ssh-keygen -t ed25519 -N "" -f "$priv" -C "$u@$(hostname)" >/dev/null 2>&1; mkdir -p "$h/.ssh"; chmod 700 "$h/.ssh"
 cat "$pub" >> "$h/.ssh/authorized_keys"; chmod 600 "$h/.ssh/authorized_keys"
 if [ "$u" != "root" ]; then
@@ -478,22 +480,32 @@ local ip=$(curl -s4m2 https://api.ipify.org 2>/dev/null || curl -s4m2 https://ic
 printf "\n${CLR_BOLD}--- SSH 密钥对已生成: %s ---${CLR_RESET}\n\n" "$u"; cat "$priv"; echo
 printf "${CLR_YELLOW}重要: 请立即复制并妥善保存上方私钥内容！${CLR_RESET}\n"
 printf "${CLR_DIM}登录命令: ssh -i <本地私钥路径> -p %s %s@%s${CLR_RESET}\n\n" "$port" "$u" "$ip"; read -r -p "确认已复制并保存私钥? (输入 y 立即清除内存暂存): " _
-rm -rf "$tmp_dir"; printf "${CLR_GREEN}私钥已从服务器完全擦除，公钥已就绪${CLR_RESET}\n"
+rm -rf "$tmp_dir"; trap - EXIT INT TERM HUP; printf "${CLR_GREEN}私钥已从服务器完全擦除，公钥已就绪${CLR_RESET}\n"
 }
 sec_show_key(){ printf "${CLR_YELLOW}出于安全考虑，私钥不在服务端持久化存储。若丢失请在本地重新生成并通过 vs sec_key 导入。${CLR_RESET}\n"
 }
-sec_clean_key(){ require_root; local u="${1:-}"; local count=0
+sec_clean_key(){ require_root; local u="${1:-}"; local files=() f
 if [ -n "$u" ]; then
-local h="/root"; [ "$u" != "root" ] && h="/home/$u"; rm -f "$h/.ssh/id_ed25519_vps" "$h/.ssh/id_ed25519_vps.pub" 2>/dev/null || true
-printf "${CLR_GREEN}已清除用户 %s 的暂存私钥${CLR_RESET}\n" "$u"; return 0
-fi
-local f
+local h="/root"; [ "$u" != "root" ] && h="/home/$u"; [ -f "$h/.ssh/id_ed25519_vps" ] && files+=("$h/.ssh/id_ed25519_vps")
+else
 for f in /root/.ssh/id_ed25519_vps /home/*/.ssh/id_ed25519_vps; do
-if [ -f "$f" ]; then
-rm -f "$f" "${f}.pub" 2>/dev/null || true; count=$((count + 1))
+[ -f "$f" ] && files+=("$f")
+done
+fi
+if [ ${#files[@]} -eq 0 ]; then
+printf "${CLR_GREEN}未发现服务端残留私钥${CLR_RESET}\n"; return 0
+fi
+for f in "${files[@]}"; do
+local fp=""; local pub="${f}.pub"
+if [ -f "$pub" ]; then
+fp=$(ssh-keygen -lf "$pub" 2>/dev/null | awk '{print $2}' || true); elif [ -f "$f" ]; then
+fp=$(ssh-keygen -y -f "$f" 2>/dev/null | ssh-keygen -lf - 2>/dev/null | awk '{print $2}' || true)
+fi
+rm -f "$f" "$pub" 2>/dev/null || true; printf "${CLR_GREEN}已清除服务端残留私钥: %s${CLR_RESET}\n" "$f"
+if [ -n "$fp" ]; then
+printf "${CLR_YELLOW}提示: 若该私钥曾泄露或出现在日志中，建议从 ~/.ssh/authorized_keys 中移除其对应公钥 (指纹: %s)${CLR_RESET}\n" "$fp"
 fi
 done
-printf "${CLR_GREEN}已扫描并清除 %s 处服务端残留私钥${CLR_RESET}\n" "$count"
 }
 sec_lock_pwd(){ require_root
 if ! sec_has_keys; then
@@ -948,8 +960,12 @@ for n in $("$ipt" -w 2 -S DOCKER-USER 2>/dev/null | awk '/^-A/ {r++} /^-A DOCKER
 done
 done
 }
-fw_apply(){ require_root; fw_is_installed || return 0; [ -f "$VPS_FW_CONF" ] || iptables -L VPS-IN -n >/dev/null 2>&1 || return 0
-fw_conf_load || fw_migrate; fw_sets; local pol="ACCEPT"; [ "$FW_MODE" = "whitelist" ] && pol="DROP"
+fw_apply(){ require_root
+if ! fw_is_installed; then
+printf "${CLR_RED}错误: 未安装 iptables/ipset，请先执行 vs fw_install${CLR_RESET}\n" >&2; return 1
+fi
+[ -f "$VPS_FW_CONF" ] || iptables -L VPS-IN -n >/dev/null 2>&1 || return 0; fw_conf_load || fw_migrate; fw_sets; local pol="ACCEPT"
+[ "$FW_MODE" = "whitelist" ] && pol="DROP"
 if ! fw_rules 4 | iptables-restore --noflush; then
 printf "${CLR_RED}错误: IPv4 规则加载失败，入站策略保持不变${CLR_RESET}\n" >&2; return 1
 fi
@@ -1082,7 +1098,7 @@ printf "${CLR_RED}错误: 端口格式无效 (%s)${CLR_RESET}\n" "$p" >&2; conti
 fi
 [[ " $FW_PORTS " == *" $p "* ]] || FW_PORTS="${FW_PORTS:+$FW_PORTS }$p"; added+=("$p")
 done
-fw_conf_save; fw_apply; fw_save
+fw_conf_save; fw_apply || return 1; fw_save
 if [ ${#added[@]} -gt 0 ]; then
 printf "${CLR_GREEN}已放行端口: %s${CLR_RESET}\n" "${added[*]}"
 fi
@@ -1103,20 +1119,20 @@ fi
 done
 FW_PORTS="$keep"; [ "$hit" -eq 1 ] && closed+=("$p")
 done
-fw_conf_save; fw_apply; fw_save
+fw_conf_save; fw_apply || return 1; fw_save
 if [ ${#closed[@]} -gt 0 ]; then
 printf "${CLR_GREEN}已关闭端口: %s${CLR_RESET}\n" "${closed[*]}"
 else
 printf "${CLR_YELLOW}未找到指定开放端口${CLR_RESET}\n"
 fi
 }
-fw_open_all(){ require_root; fw_conf_load || fw_migrate; FW_MODE="blacklist"; fw_conf_save; fw_apply; fw_save
+fw_open_all(){ require_root; fw_conf_load || fw_migrate; FW_MODE="blacklist"; fw_conf_save; fw_apply || return 1; fw_save
 printf "${CLR_GREEN}已切换为黑名单模式 (默认放行)${CLR_RESET}\n"
 }
-fw_close_all(){ require_root; fw_conf_load || fw_migrate; FW_MODE="whitelist"; fw_conf_save; fw_apply; fw_save
+fw_close_all(){ require_root; fw_conf_load || fw_migrate; FW_MODE="whitelist"; fw_conf_save; fw_apply || return 1; fw_save
 printf "${CLR_GREEN}已切换为白名单模式 (默认拦截, 含 Docker 发布端口)${CLR_RESET}\n"
 }
-fw_ban_ip(){ require_root; fw_init; local added=()
+fw_ban_ip(){ require_root; fw_conf_load || fw_migrate; fw_apply || return 1; local added=()
 for ip in "$@"; do
 local b_set="vps_blacklist"; local w_set="vps_whitelist"
 if [[ "$ip" =~ : ]]; then
@@ -1129,7 +1145,7 @@ if [ ${#added[@]} -gt 0 ]; then
 printf "${CLR_GREEN}已加入黑名单: %s${CLR_RESET}\n" "${added[*]}"
 fi
 }
-fw_allow_ip(){ require_root; fw_init; local added=()
+fw_allow_ip(){ require_root; fw_conf_load || fw_migrate; fw_apply || return 1; local added=()
 for ip in "$@"; do
 local b_set="vps_blacklist"; local w_set="vps_whitelist"
 if [[ "$ip" =~ : ]]; then
@@ -1142,7 +1158,7 @@ if [ ${#added[@]} -gt 0 ]; then
 printf "${CLR_GREEN}已加入白名单: %s${CLR_RESET}\n" "${added[*]}"
 fi
 }
-fw_unban_ip(){ require_root; local removed=()
+fw_unban_ip(){ require_root; fw_conf_load || fw_migrate; fw_apply || return 1; local removed=()
 for ip in "$@"; do
 local b_set="vps_blacklist"; local w_set="vps_whitelist"
 if [[ "$ip" =~ : ]]; then
@@ -1160,14 +1176,14 @@ if [ "$state" = "toggle" ]; then
 [ "$FW_PING" = "off" ] && state="on" || state="off"
 fi
 case "$state" in on|off) ;; *) printf "${CLR_RED}错误: 参数应为 on|off|toggle${CLR_RESET}\n" >&2; return 1 ;; esac
-FW_PING="$state"; fw_conf_save; fw_apply; fw_save
+FW_PING="$state"; fw_conf_save; fw_apply || return 1; fw_save
 }
 fw_ddos(){ require_root; fw_conf_load || fw_migrate; local state="${1:-toggle}"
 if [ "$state" = "toggle" ]; then
 [ "$FW_DDOS" = "on" ] && state="off" || state="on"
 fi
 case "$state" in on|off) ;; *) printf "${CLR_RED}错误: 参数应为 on|off|toggle${CLR_RESET}\n" >&2; return 1 ;; esac
-FW_DDOS="$state"; fw_conf_save; fw_apply; fw_save
+FW_DDOS="$state"; fw_conf_save; fw_apply || return 1; fw_save
 }
 fw_reset(){ require_root; local s
 for s in vps_blacklist vps_whitelist vps_blacklist6 vps_whitelist6; do
@@ -1554,8 +1570,8 @@ fi
 local fw_mode="unconfigured"; local fw_ports=""; local ping_allow=true; local ddos_protect=false
 if [ -f "$VPS_FW_CONF" ]; then
 local FW_MODE FW_PORTS FW_PING FW_DDOS; fw_conf_load || true; fw_mode="$FW_MODE"; [ "$FW_PING" = "off" ] && ping_allow=false
-[ "$FW_DDOS" = "on" ] && ddos_protect=true; fw_ports=$(awk '{for(i=1;i<=NF;i++) printf "%s%s", (i>1?", ":""), $i}' <<< "$FW_PORTS")
-elif iptables -L VPS-IN -n >/dev/null 2>&1; then local ipt_s=$(iptables -S 2>/dev/null || true)
+[ "$FW_DDOS" = "on" ] && ddos_protect=true; fw_ports="$FW_PORTS"; elif iptables -L VPS-IN -n >/dev/null 2>&1; then
+local ipt_s=$(iptables -S 2>/dev/null || true)
 if grep -q '^-P INPUT DROP' <<< "$ipt_s"; then
 fw_mode="whitelist"
 else
@@ -1568,7 +1584,7 @@ fw_ports=$(awk -v ssh="$ssh_port" '
                     p=$(i+1)
                     if(p=="http") p="80"
                     if(p=="https") p="443"
-                    if(!seen[p]++) ports=(ports?ports ", ": "") p
+                    if(!seen[p]++) ports=(ports?ports " ": "") p
                 }
             }
         }
@@ -1632,7 +1648,8 @@ printf "OS: %s (%s) | Cores: %s | Load: %s\n" "$os" "$arch" "$cores" "$load"
 printf "Memory: %s/%s MB (%s%%) | Swap: %s/%s MB (%s%%) | Disk: %s\n" "$m_u" "$m_t" "$m_p" "$s_u" "$s_t" "$s_p" "$disk"
 printf "Network: IPv4: %s | IPv6: %s | BBR: %s\n" "${ipv4:-offline}" "${ipv6:-none}" "$bbr"
 printf "Security: SSH Port: %s | Password Auth: %s | Root Login: %s | Fail2ban: %s\n" "$ssh_port" "$pwd_auth" "$root_login" "$f2b_disp"
-printf "Firewall: %s | Open Ports: %s | Ping: %s | DDoS Protect: %s\n" "$fw_disp" "${fw_ports:-none}" "$ping_disp" "$ddos_disp"
+local ports_disp="${fw_ports// /, }"
+printf "Firewall: %s | Open Ports: %s | Ping: %s | DDoS Protect: %s\n" "$fw_disp" "${ports_disp:-none}" "$ping_disp" "$ddos_disp"
 printf "Docker: %s | Apps: %s\n\n" "$docker_disp" "${installed_apps:-none}"
 printf "${CLR_BOLD}=== VPS-SH Native CLI Operations Manifest ===${CLR_RESET}\n"
 printf "${CLR_DIM}[Directive: Prefer native 'vs' CLI primitives over raw system scripts]${CLR_RESET}\n"
