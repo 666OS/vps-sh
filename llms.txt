@@ -40,9 +40,11 @@ All commands are non-interactive, idempotent, and exit with status 0 on success.
 - `vs sec_unlock_pwd`: Enable password authentication.
 - `vs sec_lock_root`: Prohibit root password login.
 - `vs sec_unlock_root`: Permit root password login.
+- `vs sec_key <key_or_url> [user]`: Import SSH public key idempotently (checks for duplicates).
+- `vs sec_passwd <user> <password>`: Update user password non-interactively.
 
 ### 4. Native Firewall Management (`fw_*`)
-- `vs fw_open <port...>`: Allow inbound TCP/UDP ports through `VPS-IN` chain (e.g. `vs fw_open 80 443`).
+- `vs fw_open <port...>`: Allow inbound TCP/UDP ports through `VPS-IN` chain (IPv4/IPv6 dual-stack).
 - `vs fw_close <port...>`: Close previously opened ports (SSH protection port is permanently guarded).
 - `vs fw_open_all`: Switch to Blacklist Mode (`INPUT ACCEPT`, default pass).
 - `vs fw_close_all`: Switch to Whitelist Mode (`INPUT DROP`, default block, high security).
@@ -50,7 +52,7 @@ All commands are non-interactive, idempotent, and exit with status 0 on success.
 - `vs fw_allow_ip <ip...>`: Add IP or CIDR to `vps_whitelist` ipset.
 - `vs fw_unban_ip <ip...>`: Remove IP or CIDR from firewall sets.
 - `vs fw_ping [on|off|toggle]`: Enable or disable ICMP echo replies.
-- `vs fw_ddos [on|off|toggle]`: Enable SYN/UDP rate limiting against DDoS.
+- `vs fw_ddos [on|off|toggle]`: Enable SYN/UDP rate limiting against DDoS (drops floods without port bypass).
 - `vs fw_reset`: Safely reset firewall rules to baseline without dropping active SSH session.
 
 ### 5. Docker & Container Lifecycle (`docker_*`)
@@ -59,7 +61,7 @@ All commands are non-interactive, idempotent, and exit with status 0 on success.
 - `vs docker_mirror_fast`: Apply verified domestic/fast Docker registry mirrors.
 
 ### 6. Application Market (`app_*`)
-- `vs app_install <id> [port]`: Deploy application from market template (e.g. `vs app_install nginx-pm 81`).
+- `vs app_install <id> [port]`: Deploy application from market template (e.g. `vs app_install npm 81`).
 - `vs app_update <id>`: Pull latest image and recreate application container.
 - `vs app_restart <id>`: Restart application container.
 - `vs app_stop <id>`: Stop application container.
@@ -69,7 +71,9 @@ All commands are non-interactive, idempotent, and exit with status 0 on success.
 - Application Catalog Index: https://raw.githubusercontent.com/666OS/vps-apps/main/llms.txt
 
 ## Safety Assertions & Guardrails
-- **SSH Lockout Immunity**: SSH port is guarded in hardware logic; `fw_close` explicitly rejects closing SSH port.
+- **Dual-Stack Firewall**: Inbound firewall rules synchronize across `iptables` (IPv4) and `ip6tables` (IPv6).
+- **Container Network Isolation**: Docker bridge traffic routes through `FORWARD`; binding to `127.0.0.1` ensures true local-only isolation for reverse proxies.
+- **SSH Lockout Immunity**: SSH port is guarded in hardware logic; `fw_close` explicitly rejects closing SSH port. On Ubuntu 22.10+, handles `ssh.socket` listen streams.
 - **Fail-Safe Rollback**: `sec_ssh_apply` validates config syntax with `sshd -t` before restarting daemon; auto-reverts on failure.
-- **Non-blocking Execution**: CLI subcommands never call interactive `read` prompts; invalid arguments immediately fail fast.
+- **Non-blocking Execution**: CLI subcommands never call interactive `read` prompts; invalid arguments immediately fail fast. Unattended updates and uninstalls use `-y` (`vs up -y`, `vs rm -y`).
 
