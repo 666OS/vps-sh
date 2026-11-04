@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="2870402"; VPS_BUILD_TIME="2026-11-04 20:18"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="3c1ff1c"; VPS_BUILD_TIME="2026-11-04 20:33"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -132,7 +132,7 @@ fi
 elif [ ! -f /usr/local/bin/vs ]; then curl -fsSL "$VPS_RAW_URL/vps.sh" -o /usr/local/bin/vs 2>/dev/null && registered=1 || return 0
 fi
 chmod 755 /usr/local/bin/vs 2>/dev/null || true; [ -L /usr/bin/vs ] || ln -sf /usr/local/bin/vs /usr/bin/vs 2>/dev/null || true
-[ "$registered" -eq 1 ] && echo -e "${CLR_CYAN}已注册全局命令: vs${CLR_RESET}" >&2 || true
+fw_heal 2>/dev/null || true; [ "$registered" -eq 1 ] && echo -e "${CLR_CYAN}已注册全局命令: vs${CLR_RESET}" >&2 || true
 }
 sys_uninstall(){ require_root; local confirm="${1:-}"
 if [ "$confirm" != "-y" ] && [ "$confirm" != "--yes" ]; then
@@ -511,7 +511,8 @@ fi
 fi
 sec_ssh_apply "$(sec_get_port)" "$(sec_get_pwd)" "$mode"
 }
-sec_lock_root(){ sec_root_login "no"; }; sec_unlock_root(){ sec_root_login "yes"; }; sec_user_list(){ local root_key="否"
+sec_lock_root(){ sec_root_login "no"; }; sec_unlock_root(){ sec_root_login "yes"; }
+sec_root_keyonly(){ sec_root_login "prohibit-password"; }; sec_user_list(){ local root_key="否"
 [ -s /root/.ssh/authorized_keys ] && root_key="是"; printf "%-16s | UID: %-5s | 权限: %-8s | 拥有密钥: %s\n" "root" "0" "特权" "$root_key"
 awk -F: '$3 >= 1000 && $3 < 60000 {printf "%s %s\n", $1, $3}' /etc/passwd | while read -r u uid; do local perm="普通"
 if [ -f "/etc/sudoers.d/90-$u" ]; then
@@ -838,6 +839,15 @@ fw_is_installed(){ command -v iptables >/dev/null 2>&1 && command -v ipset >/dev
 }
 fw_is_initialized(){ iptables -L VPS-IN -n >/dev/null 2>&1
 }
+fw_heal(){ [ "$(id -u)" -eq 0 ] || return 0
+if iptables -L VPS-IN -n >/dev/null 2>&1; then
+if command -v ip6tables >/dev/null 2>&1 && ip6tables -L VPS-IN -n >/dev/null 2>&1; then
+if ! ip6tables -w 2 -C VPS-IN -p ipv6-icmp -j ACCEPT 2>/dev/null; then
+fw_init >/dev/null 2>&1 || true; fw_save >/dev/null 2>&1 || true
+fi
+fi
+fi
+}
 fw_conflict(){
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
 echo "ufw"; return 0
@@ -929,7 +939,7 @@ fi
 if ! fw_is_initialized; then
 printf "${CLR_BOLD}状态:${CLR_RESET} ${CLR_YELLOW}未初始化${CLR_RESET}\n"; return 0
 fi
-local ssh_port=$(sec_get_port); local ipt_rules=$(iptables -S 2>/dev/null || true)
+fw_heal; local ssh_port=$(sec_get_port); local ipt_rules=$(iptables -S 2>/dev/null || true)
 local in_policy=$(awk '/^-P INPUT/ {print $3}' <<< "$ipt_rules"); local policy_desc="${CLR_GREEN}白名单模式 (默认拦截)${CLR_RESET}"
 [ "$in_policy" = "ACCEPT" ] && policy_desc="${CLR_YELLOW}黑名单模式 (默认放行)${CLR_RESET}"
 local bans=$( (ipset list -t vps_blacklist 2>/dev/null || true; ipset list -t vps_blacklist6 2>/dev/null || true) | awk '/Number of entries:/ {c+=$NF} END {print c+0}')
@@ -1316,7 +1326,7 @@ case "$confirm" in
 chmod 755 "$tmp"; mv -f "$tmp" /usr/local/bin/vs; rm -f "${VPS_CACHE_DIR:-/tmp}/update_meta" 2>/dev/null || true
 [ -L /usr/bin/vs ] || ln -sf /usr/local/bin/vs /usr/bin/vs 2>/dev/null || true
 if iptables -C INPUT -j VPS-IN 2>/dev/null; then
-fw_init 2>/dev/null || true; fw_save 2>/dev/null || true
+/usr/local/bin/vs fw_init >/dev/null 2>&1 || true; /usr/local/bin/vs fw_save >/dev/null 2>&1 || true
 fi
 printf "${CLR_GREEN}已更新至 %s${CLR_RESET}\n" "$remote_ver"; exit 0; ;;
 *)
@@ -1427,12 +1437,13 @@ Core Commands:
   vs sec_port <port>      Change SSH port (validates syntax before restart)
   vs sec_lock_pwd         Disable password authentication (key-only)
   vs sec_unlock_pwd       Enable password authentication
-  vs sec_lock_root        Prohibit root password login
-  vs sec_unlock_root      Permit root password login
+  vs sec_lock_root        Disable root login completely (requires sudo user with key)
+  vs sec_unlock_root      Permit root login (password & key)
   vs fw_open <port...>    Allow inbound TCP/UDP ports in VPS-IN chain
   vs fw_close <port...>   Close ports (SSH port is permanently protected)
   vs fw_ban_ip <ip...>    Block IP/CIDR in vps_blacklist ipset
   vs fw_unban_ip <ip...>  Unblock IP/CIDR from firewall sets
+  vs fw_allow_ip <ip...>  Whitelist IP/CIDR in vps_whitelist ipset
   vs fw_open_all          Switch to Blacklist Mode (INPUT ACCEPT)
   vs fw_close_all         Switch to Whitelist Mode (INPUT DROP)
   vs docker_install       Install Docker Engine and Docker Compose plugin
@@ -1482,7 +1493,7 @@ if systemctl is-active --quiet fail2ban 2>/dev/null; then
 f2b_active=true; f2b_banned=$(fail2ban-client status sshd 2>/dev/null | awk '/Currently banned:/ {print $NF}')
 fi
 fi
-local fw_mode="unconfigured"; local fw_ports=""; local ping_allow=true; local ddos_protect=false
+local fw_mode="unconfigured"; local fw_ports=""; local ping_allow=true; local ddos_protect=false; fw_heal 2>/dev/null || true
 if iptables -L VPS-IN -n >/dev/null 2>&1; then
 local ipt_s=$(iptables -S 2>/dev/null || true)
 if grep -q '^-P INPUT DROP' <<< "$ipt_s"; then
@@ -1545,8 +1556,8 @@ printf "${CLR_BOLD}=== VPS-SH Native CLI Operations Manifest ===${CLR_RESET}\n"
 printf "${CLR_DIM}[Directive: Prefer native 'vs' CLI primitives over raw system scripts]${CLR_RESET}\n"
 printf " - System: vs sys_swap <mb> | vs sys_tune | vs sys_clean\n"
 printf " - Network: vs net_dns_foreign | vs net_dns_china | vs net_prio_v4 | vs net_prio_v6\n"
-printf " - Security: vs sec_port <port> | vs sec_lock_pwd | vs sec_unlock_pwd | vs sec_lock_root | vs sec_key <key>\n"
-printf " - Firewall: vs fw_open <port...> | vs fw_close <port...> | vs fw_ban_ip <ip> | vs fw_open_all | vs fw_close_all\n"
+printf " - Security: vs sec_port <port> | vs sec_lock_pwd | vs sec_unlock_pwd | vs sec_lock_root | vs sec_unlock_root | vs sec_key <key>\n"
+printf " - Firewall: vs fw_open <port...> | vs fw_close <port...> | vs fw_ban_ip <ip> | vs fw_unban_ip <ip> | vs fw_allow_ip <ip> | vs fw_open_all | vs fw_close_all\n"
 printf " - Docker & Apps: vs docker_install | vs docker_cleanup | vs app_install <id> [port] | vs app_update <id>\n"
 printf " - Catalog: https://raw.githubusercontent.com/666OS/vps-apps/main/llms.txt\n"
 fi

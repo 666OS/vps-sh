@@ -38,8 +38,9 @@ All commands are non-interactive, idempotent, and exit with status 0 on success.
 - `vs sec_port <port>`: Change SSH port, test configuration with `sshd -t` before reload, and auto-sync firewall.
 - `vs sec_lock_pwd`: Disable password authentication (SSH key-only).
 - `vs sec_unlock_pwd`: Enable password authentication.
-- `vs sec_lock_root`: Prohibit root password login.
-- `vs sec_unlock_root`: Permit root password login.
+- `vs sec_lock_root`: Disable root login completely (requires an existing sudo user with authorized key).
+- `vs sec_unlock_root`: Permit root login (allows password and key).
+- `vs sec_root_login <no|prohibit-password|yes>`: Explicitly configure root SSH login policy.
 - `vs sec_key <key_or_url> [user]`: Import SSH public key idempotently (checks for duplicates).
 - `vs sec_passwd <user> <password>`: Update user password non-interactively.
 
