@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="3a66f07"; VPS_BUILD_TIME="2026-11-04 19:54"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="da74551"; VPS_BUILD_TIME="2026-11-04 20:06"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -861,7 +861,9 @@ fi
 fw_init; fw_save; printf "${CLR_GREEN}防火墙初始化完成${CLR_RESET}\n"
 }
 fw_init(){ ipset create vps_whitelist hash:net 2>/dev/null || true; ipset create vps_blacklist hash:net 2>/dev/null || true
-iptables -w 2 -N VPS-IN 2>/dev/null || true; iptables -w 2 -C INPUT -j VPS-IN 2>/dev/null || iptables -w 2 -I INPUT 1 -j VPS-IN
+ipset create vps_whitelist6 hash:net family inet6 2>/dev/null || true
+ipset create vps_blacklist6 hash:net family inet6 2>/dev/null || true; iptables -w 2 -N VPS-IN 2>/dev/null || true
+iptables -w 2 -C INPUT -j VPS-IN 2>/dev/null || iptables -w 2 -I INPUT 1 -j VPS-IN
 iptables -w 2 -C VPS-IN -i lo -j ACCEPT 2>/dev/null || iptables -w 2 -A VPS-IN -i lo -j ACCEPT
 iptables -w 2 -C VPS-IN -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || iptables -w 2 -A VPS-IN -m state --state ESTABLISHED,RELATED -j ACCEPT
 iptables -w 2 -C VPS-IN -m set --match-set vps_blacklist src -j DROP 2>/dev/null || iptables -w 2 -A VPS-IN -m set --match-set vps_blacklist src -j DROP
@@ -873,6 +875,9 @@ ip6tables -w 2 -N VPS-IN 2>/dev/null || true
 ip6tables -w 2 -C INPUT -j VPS-IN 2>/dev/null || ip6tables -w 2 -I INPUT 1 -j VPS-IN 2>/dev/null || true
 ip6tables -w 2 -C VPS-IN -i lo -j ACCEPT 2>/dev/null || ip6tables -w 2 -A VPS-IN -i lo -j ACCEPT 2>/dev/null || true
 ip6tables -w 2 -C VPS-IN -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || ip6tables -w 2 -A VPS-IN -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
+ip6tables -w 2 -C VPS-IN -p ipv6-icmp -j ACCEPT 2>/dev/null || ip6tables -w 2 -A VPS-IN -p ipv6-icmp -j ACCEPT 2>/dev/null || true
+ip6tables -w 2 -C VPS-IN -m set --match-set vps_blacklist6 src -j DROP 2>/dev/null || ip6tables -w 2 -A VPS-IN -m set --match-set vps_blacklist6 src -j DROP 2>/dev/null || true
+ip6tables -w 2 -C VPS-IN -m set --match-set vps_whitelist6 src -j ACCEPT 2>/dev/null || ip6tables -w 2 -A VPS-IN -m set --match-set vps_whitelist6 src -j ACCEPT 2>/dev/null || true
 ip6tables -w 2 -C VPS-IN -p tcp --dport "$ssh_port" -j ACCEPT 2>/dev/null || ip6tables -w 2 -A VPS-IN -p tcp --dport "$ssh_port" -j ACCEPT 2>/dev/null || true
 fi
 }
@@ -927,15 +932,13 @@ fi
 local ssh_port=$(sec_get_port); local ipt_rules=$(iptables -S 2>/dev/null || true)
 local in_policy=$(awk '/^-P INPUT/ {print $3}' <<< "$ipt_rules"); local policy_desc="${CLR_GREEN}白名单模式 (默认拦截)${CLR_RESET}"
 [ "$in_policy" = "ACCEPT" ] && policy_desc="${CLR_YELLOW}黑名单模式 (默认放行)${CLR_RESET}"
-local bans=$( (ipset list -t vps_blacklist 2>/dev/null || true) | awk '/Number of entries:/ {print $NF}')
-local allows=$( (ipset list -t vps_whitelist 2>/dev/null || true) | awk '/Number of entries:/ {print $NF}'); local ping_status="允许"
+local bans=$( (ipset list -t vps_blacklist 2>/dev/null || true; ipset list -t vps_blacklist6 2>/dev/null || true) | awk '/Number of entries:/ {c+=$NF} END {print c+0}')
+local allows=$( (ipset list -t vps_whitelist 2>/dev/null || true; ipset list -t vps_whitelist6 2>/dev/null || true) | awk '/Number of entries:/ {c+=$NF} END {print c+0}')
+local ping_status="允许"
 if grep -qE '^-A VPS-IN -p icmp .*-j DROP' <<< "$ipt_rules"; then
 ping_status="已拦截"
 fi
-local ddos_status="已关闭"
-if grep -qE '^-A VPS-IN -p tcp .*(SYN|--syn) -j DROP' <<< "$ipt_rules"; then
-ddos_status="已开启"
-fi
+local ddos_status="已关闭"; [ "$(fw_get_ddos)" = "on" ] && ddos_status="已开启"
 printf "${CLR_BOLD}入站策略:${CLR_RESET} %s | ${CLR_BOLD}Ping:${CLR_RESET} %s | ${CLR_BOLD}防DDoS:${CLR_RESET} %s\n" "$policy_desc" "$ping_status" "$ddos_status"
 printf "${CLR_BOLD}手动黑名单:${CLR_RESET} %s IP | ${CLR_BOLD}手动白名单:${CLR_RESET} %s IP\n\n" "${bans:-0}" "${allows:-0}"
 printf " ${CLR_DIM}%-9s %-18s %s${CLR_RESET}\n" "协议" "目标/端口" "说明"; printf " %s\n" "----------------------------------------------------"
@@ -1025,7 +1028,11 @@ printf "${CLR_GREEN}已切换为白名单模式 (默认拦截)${CLR_RESET}\n"
 }
 fw_ban_ip(){ require_root; fw_init; local added=()
 for ip in "$@"; do
-ipset del vps_whitelist "$ip" -exist 2>/dev/null || true; ipset add vps_blacklist "$ip" -exist 2>/dev/null || true; added+=("$ip")
+local b_set="vps_blacklist"; local w_set="vps_whitelist"
+if [[ "$ip" =~ : ]]; then
+b_set="vps_blacklist6"; w_set="vps_whitelist6"
+fi
+ipset del "$w_set" "$ip" -exist 2>/dev/null || true; ipset add "$b_set" "$ip" -exist 2>/dev/null || true; added+=("$ip")
 done
 fw_save
 if [ ${#added[@]} -gt 0 ]; then
@@ -1034,7 +1041,11 @@ fi
 }
 fw_allow_ip(){ require_root; fw_init; local added=()
 for ip in "$@"; do
-ipset del vps_blacklist "$ip" -exist 2>/dev/null || true; ipset add vps_whitelist "$ip" -exist 2>/dev/null || true; added+=("$ip")
+local b_set="vps_blacklist"; local w_set="vps_whitelist"
+if [[ "$ip" =~ : ]]; then
+b_set="vps_blacklist6"; w_set="vps_whitelist6"
+fi
+ipset del "$b_set" "$ip" -exist 2>/dev/null || true; ipset add "$w_set" "$ip" -exist 2>/dev/null || true; added+=("$ip")
 done
 fw_save
 if [ ${#added[@]} -gt 0 ]; then
@@ -1043,7 +1054,11 @@ fi
 }
 fw_unban_ip(){ require_root; local removed=()
 for ip in "$@"; do
-ipset del vps_blacklist "$ip" -exist 2>/dev/null || true; ipset del vps_whitelist "$ip" -exist 2>/dev/null || true; removed+=("$ip")
+local b_set="vps_blacklist"; local w_set="vps_whitelist"
+if [[ "$ip" =~ : ]]; then
+b_set="vps_blacklist6"; w_set="vps_whitelist6"
+fi
+ipset del "$b_set" "$ip" -exist 2>/dev/null || true; ipset del "$w_set" "$ip" -exist 2>/dev/null || true; removed+=("$ip")
 done
 fw_save
 if [ ${#removed[@]} -gt 0 ]; then
@@ -1056,8 +1071,12 @@ if [ "$state" = "toggle" ]; then
 fi
 if [ "$state" = "off" ]; then
 iptables -w 2 -C VPS-IN -p icmp --icmp-type echo-request -j DROP 2>/dev/null || iptables -w 2 -A VPS-IN -p icmp --icmp-type echo-request -j DROP
+if command -v ip6tables >/dev/null 2>&1; then
+ip6tables -w 2 -C VPS-IN -p ipv6-icmp --icmpv6-type echo-request -j DROP 2>/dev/null || ip6tables -w 2 -I VPS-IN 1 -p ipv6-icmp --icmpv6-type echo-request -j DROP 2>/dev/null || true
+fi
 else
 iptables -w 2 -D VPS-IN -p icmp --icmp-type echo-request -j DROP 2>/dev/null || true
+command -v ip6tables >/dev/null 2>&1 && ip6tables -w 2 -D VPS-IN -p ipv6-icmp --icmpv6-type echo-request -j DROP 2>/dev/null || true
 fi
 fw_save
 }
@@ -1068,17 +1087,19 @@ fi
 if [ "$state" = "on" ]; then
 iptables -w 2 -D VPS-IN -p tcp --syn -m limit --limit 500/s --limit-burst 100 -j ACCEPT 2>/dev/null || true
 iptables -w 2 -D VPS-IN -p udp -m limit --limit 3000/s --limit-burst 500 -j ACCEPT 2>/dev/null || true
+iptables -w 2 -D VPS-IN -p udp -m hashlimit --hashlimit-above 3000/s --hashlimit-burst 500 --hashlimit-mode srcip --hashlimit-name vps_udp -j DROP 2>/dev/null || true
 iptables -w 2 -C VPS-IN -p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn -j DROP 2>/dev/null || \
 iptables -w 2 -I VPS-IN 1 -p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn -j DROP
-iptables -w 2 -C VPS-IN -p udp -m hashlimit --hashlimit-above 3000/s --hashlimit-burst 500 --hashlimit-mode srcip --hashlimit-name vps_udp -j DROP 2>/dev/null || \
-iptables -w 2 -I VPS-IN 2 -p udp -m hashlimit --hashlimit-above 3000/s --hashlimit-burst 500 --hashlimit-mode srcip --hashlimit-name vps_udp -j DROP
+if command -v ip6tables >/dev/null 2>&1; then
+ip6tables -w 2 -C VPS-IN -p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn6 -j DROP 2>/dev/null || \
+ip6tables -w 2 -I VPS-IN 1 -p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn6 -j DROP 2>/dev/null || true
+fi
 if iptables -w 2 -L DOCKER-USER -n >/dev/null 2>&1; then
 iptables -w 2 -D DOCKER-USER -p tcp --syn -m limit --limit 500/s --limit-burst 100 -j ACCEPT 2>/dev/null || true
 iptables -w 2 -D DOCKER-USER -p udp -m limit --limit 3000/s --limit-burst 500 -j ACCEPT 2>/dev/null || true
+iptables -w 2 -D DOCKER-USER -p udp -m hashlimit --hashlimit-above 3000/s --hashlimit-burst 500 --hashlimit-mode srcip --hashlimit-name vps_udp -j DROP 2>/dev/null || true
 iptables -w 2 -C DOCKER-USER -p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn -j DROP 2>/dev/null || \
 iptables -w 2 -I DOCKER-USER 1 -p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn -j DROP
-iptables -w 2 -C DOCKER-USER -p udp -m hashlimit --hashlimit-above 3000/s --hashlimit-burst 500 --hashlimit-mode srcip --hashlimit-name vps_udp -j DROP 2>/dev/null || \
-iptables -w 2 -I DOCKER-USER 2 -p udp -m hashlimit --hashlimit-above 3000/s --hashlimit-burst 500 --hashlimit-mode srcip --hashlimit-name vps_udp -j DROP
 fi
 else
 iptables -w 2 -D VPS-IN -p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn -j DROP 2>/dev/null || true
@@ -1087,6 +1108,9 @@ iptables -w 2 -D VPS-IN -p tcp --syn -m limit --limit 500/s --limit-burst 100 -j
 iptables -w 2 -D VPS-IN -p tcp --syn -j DROP 2>/dev/null || true
 iptables -w 2 -D VPS-IN -p udp -m limit --limit 3000/s --limit-burst 500 -j ACCEPT 2>/dev/null || true
 iptables -w 2 -D VPS-IN -p udp -j DROP 2>/dev/null || true
+if command -v ip6tables >/dev/null 2>&1; then
+ip6tables -w 2 -D VPS-IN -p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn6 -j DROP 2>/dev/null || true
+fi
 if iptables -w 2 -L DOCKER-USER -n >/dev/null 2>&1; then
 iptables -w 2 -D DOCKER-USER -p tcp --syn -m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name vps_syn -j DROP 2>/dev/null || true
 iptables -w 2 -D DOCKER-USER -p udp -m hashlimit --hashlimit-above 3000/s --hashlimit-burst 500 --hashlimit-mode srcip --hashlimit-name vps_udp -j DROP 2>/dev/null || true
@@ -1102,7 +1126,8 @@ fw_reset(){ require_root; iptables -w 2 -P INPUT ACCEPT; iptables -w 2 -F VPS-IN
 if command -v ip6tables >/dev/null 2>&1; then
 ip6tables -w 2 -P INPUT ACCEPT 2>/dev/null || true; ip6tables -w 2 -F VPS-IN 2>/dev/null || true
 fi
-ipset flush vps_blacklist 2>/dev/null || true; ipset flush vps_whitelist 2>/dev/null || true; fw_init; iptables -w 2 -P INPUT DROP
+ipset flush vps_blacklist 2>/dev/null || true; ipset flush vps_whitelist 2>/dev/null || true
+ipset flush vps_blacklist6 2>/dev/null || true; ipset flush vps_whitelist6 2>/dev/null || true; fw_init; iptables -w 2 -P INPUT DROP
 command -v ip6tables >/dev/null 2>&1 && ip6tables -w 2 -P INPUT DROP 2>/dev/null || true; fw_save
 printf "${CLR_GREEN}防火墙规则已重置至初始状态 (IPv4/IPv6 双栈生效)${CLR_RESET}\n"
 }
@@ -1152,8 +1177,8 @@ read -r -p "封禁 IP/网段 (空格隔开, 回车取消): " ip; [ -z "$ip" ] &&
 6)
 read -r -p "放行 IP/网段 (空格隔开, 回车取消): " ip; [ -z "$ip" ] && continue; fw_allow_ip $ip; ;;
 7)
-local b_ips=$( (ipset list vps_blacklist 2>/dev/null || true) | awk '/^Members:/ {m=1; next} m && NF {printf "%s ", $1}')
-local w_ips=$( (ipset list vps_whitelist 2>/dev/null || true) | awk '/^Members:/ {m=1; next} m && NF {printf "%s ", $1}')
+local b_ips=$( (ipset list vps_blacklist 2>/dev/null || true; ipset list vps_blacklist6 2>/dev/null || true) | awk '/^Members:/ {m=1; next} m && NF {printf "%s ", $1}')
+local w_ips=$( (ipset list vps_whitelist 2>/dev/null || true; ipset list vps_whitelist6 2>/dev/null || true) | awk '/^Members:/ {m=1; next} m && NF {printf "%s ", $1}')
 b_ips="${b_ips% }"; w_ips="${w_ips% }"
 if [ -z "$b_ips" ] && [ -z "$w_ips" ]; then
 printf "${CLR_DIM}当前无任何手动黑/白名单 IP${CLR_RESET}\n"
@@ -1438,6 +1463,11 @@ if [ "$ipv4" != "离线" ]; then
 export VPS_IPV4_CACHE="$ipv4"
 fi
 fi
+local ipv6="无"
+local k_ip6=$( (ip -6 route get 2606:4700:4700::1111 2>/dev/null || true) | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')
+if [ -n "$k_ip6" ] && [[ ! "$k_ip6" =~ ^(fe80|::1) ]]; then
+ipv6="$k_ip6"
+fi
 local bbr=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知"); local ssh_port=$(sec_get_port 2>/dev/null || echo 22)
 local pwd_auth=$(sec_get_pwd 2>/dev/null || echo "yes"); local root_login=$(sec_get_root_login 2>/dev/null || echo "yes")
 local f2b_status="未安装"; local f2b_banned=0
@@ -1469,7 +1499,7 @@ fw_ports=$(awk -v ssh="$ssh_port" '
         }
         END { print ports }' <<< "$ipt_s")
 grep -qE '^-A VPS-IN -p icmp .*-j DROP' <<< "$ipt_s" && ping_st="已拦截"
-grep -qE '^-A VPS-IN -p tcp .*(SYN|--syn) -j DROP' <<< "$ipt_s" && ddos_st="已开启"
+grep -qE 'hashlimit-name vps_syn.*DROP|-p tcp .*(SYN|--syn).*DROP' <<< "$ipt_s" && ddos_st="已开启"
 fi
 local docker_st="未安装"
 if command -v docker >/dev/null 2>&1; then
@@ -1497,12 +1527,12 @@ local json_ddos=false; [ "$ddos_st" = "已开启" ] && json_ddos=true; local jso
 [ "$f2b_status" != "未安装" ] && json_f2b_installed=true; [[ "$f2b_status" =~ "运行中" ]] && json_f2b_active=true
 local json_docker_installed=false json_docker_active=false; [ "$docker_st" != "未安装" ] && json_docker_installed=true
 [[ "$docker_st" =~ "运行中" ]] && json_docker_active=true
-printf '{"sys":{"os":"%s","kernel":"%s","arch":"%s","cores":%s,"load":"%s","mem_used_mb":%d,"mem_total_mb":%d,"mem_pct":%s,"swap_used_mb":%d,"swap_total_mb":%d,"swap_pct":%s,"disk":"%s"},"net":{"ipv4":"%s","bbr":"%s"},"sec":{"ssh_port":%s,"pwd_auth":"%s","root_login":"%s","f2b":{"installed":%s,"active":%s,"banned":%d}},"fw":{"mode":"%s","open_ports":%s,"ping_allow":%s,"ddos_protect":%s},"docker":{"installed":%s,"active":%s,"version":"%s","running":%s,"images":%s},"apps":{"installed":%s,"catalog":"https://raw.githubusercontent.com/666OS/vps-apps/main/llms.txt"}}\n' \
-"$os" "$kernel" "$arch" "$cores" "$load" "$m_u" "$m_t" "$m_p" "$s_u" "$s_t" "$s_p" "$disk" "$ipv4" "$bbr" "$ssh_port" "$pwd_auth" "$root_login" "$json_f2b_installed" "$json_f2b_active" "${f2b_banned:-0}" "$json_fw_mode" "$ports_json" "$json_ping" "$json_ddos" "$json_docker_installed" "$json_docker_active" "${d_ver:-}" "${d_run:-0}" "${d_img:-0}" "$apps_json"
+printf '{"sys":{"os":"%s","kernel":"%s","arch":"%s","cores":%s,"load":"%s","mem_used_mb":%d,"mem_total_mb":%d,"mem_pct":%s,"swap_used_mb":%d,"swap_total_mb":%d,"swap_pct":%s,"disk":"%s"},"net":{"ipv4":"%s","ipv6":"%s","bbr":"%s"},"sec":{"ssh_port":%s,"pwd_auth":"%s","root_login":"%s","f2b":{"installed":%s,"active":%s,"banned":%d}},"fw":{"mode":"%s","open_ports":%s,"ping_allow":%s,"ddos_protect":%s},"docker":{"installed":%s,"active":%s,"version":"%s","running":%s,"images":%s},"apps":{"installed":%s,"catalog":"https://raw.githubusercontent.com/666OS/vps-apps/main/llms.txt"}}\n' \
+"$os" "$kernel" "$arch" "$cores" "$load" "$m_u" "$m_t" "$m_p" "$s_u" "$s_t" "$s_p" "$disk" "$ipv4" "$ipv6" "$bbr" "$ssh_port" "$pwd_auth" "$root_login" "$json_f2b_installed" "$json_f2b_active" "${f2b_banned:-0}" "$json_fw_mode" "$ports_json" "$json_ping" "$json_ddos" "$json_docker_installed" "$json_docker_active" "${d_ver:-}" "${d_run:-0}" "${d_img:-0}" "$apps_json"
 else
 printf "${CLR_BOLD}=== VPS-SH 系统快照 (AI 诊断) ===${CLR_RESET}\n"; printf "系统: %s (%s) | %s 核心 | 负载: %s\n" "$os" "$arch" "$cores" "$load"
 printf "内存: %s/%s MB (%s%%) | Swap: %s/%s MB (%s%%) | 磁盘: %s\n" "$m_u" "$m_t" "$m_p" "$s_u" "$s_t" "$s_p" "$disk"
-printf "网络: IPv4: %s | BBR: %s\n" "$ipv4" "$bbr"
+printf "网络: IPv4: %s | IPv6: %s | BBR: %s\n" "$ipv4" "$ipv6" "$bbr"
 printf "安全: SSH 端口: %s | 密码登录: %s | Root: %s | Fail2ban: %s\n" "$ssh_port" "$pwd_auth" "$root_login" "$f2b_status"
 printf "防火墙: %s | 放行端口: %s | Ping: %s | 防DDoS: %s\n" "$fw_mode" "${fw_ports:-无}" "$ping_st" "$ddos_st"
 printf "容器引擎: %s | 本地应用: %s\n\n" "$docker_st" "${installed_apps:-无}"; printf "${CLR_BOLD}=== VPS-SH 宿主机原生操作指令集 ===${CLR_RESET}\n"
@@ -2280,8 +2310,8 @@ case "$choice" in 1) ui_sys ;; 2) ui_net ;; 3) ui_sec ;; 4) ui_ops ;; 5) ui_app_
 done
 }
 case "${1:-}" in
--h|--help|help) vs_help ;; rm|un|uninstall) sys_uninstall ;; up|update) shift; ops_update "$@" ;; app|apps|market) ui_app_engine ;;
-docker|d) ui_docker ;; ai) shift; ai_snapshot "$@" ;;
+-h|--help|help) vs_help ;; rm|un|uninstall) shift; sys_uninstall "$@" ;; up|update) shift; ops_update "$@" ;;
+app|apps|market) ui_app_engine ;; docker|d) ui_docker ;; ai) shift; ai_snapshot "$@" ;;
 *)
 sys_shortcut 2>/dev/null || true
 if [ $# -eq 0 ]; then
