@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="da74551"; VPS_BUILD_TIME="2026-11-04 20:06"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="2870402"; VPS_BUILD_TIME="2026-11-04 20:18"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -113,7 +113,7 @@ EOF
 mkdir -p /etc/systemd/system.conf.d
     cat > /etc/systemd/system.conf.d/99-nofile.conf << 'EOF'
 [Manager]
-DefaultLimitNOFILE=65535:65535
+DefaultLimitNOFILE=65535:524288
 EOF
 systemctl daemon-reexec 2>/dev/null || true
     cat > /etc/sysctl.d/99-sys-tune.conf << 'EOF'
@@ -1314,8 +1314,11 @@ fi
 case "$confirm" in
 [yY][eE][sS]|[yY]|-y|--yes)
 chmod 755 "$tmp"; mv -f "$tmp" /usr/local/bin/vs; rm -f "${VPS_CACHE_DIR:-/tmp}/update_meta" 2>/dev/null || true
-[ -L /usr/bin/vs ] || ln -sf /usr/local/bin/vs /usr/bin/vs 2>/dev/null || true; printf "${CLR_GREEN}已更新至 %s${CLR_RESET}\n" "$remote_ver"
-exit 0; ;;
+[ -L /usr/bin/vs ] || ln -sf /usr/local/bin/vs /usr/bin/vs 2>/dev/null || true
+if iptables -C INPUT -j VPS-IN 2>/dev/null; then
+fw_init 2>/dev/null || true; fw_save 2>/dev/null || true
+fi
+printf "${CLR_GREEN}已更新至 %s${CLR_RESET}\n" "$remote_ver"; exit 0; ;;
 *)
 rm -f "$tmp"; echo "已取消"; ;;
 esac
@@ -1424,6 +1427,8 @@ Core Commands:
   vs sec_port <port>      Change SSH port (validates syntax before restart)
   vs sec_lock_pwd         Disable password authentication (key-only)
   vs sec_unlock_pwd       Enable password authentication
+  vs sec_lock_root        Prohibit root password login
+  vs sec_unlock_root      Permit root password login
   vs fw_open <port...>    Allow inbound TCP/UDP ports in VPS-IN chain
   vs fw_close <port...>   Close ports (SSH port is permanently protected)
   vs fw_ban_ip <ip...>    Block IP/CIDR in vps_blacklist ipset
@@ -1457,34 +1462,33 @@ local k_ip=$( (ip -4 route get 1.1.1.1 2>/dev/null || true) | awk '{for(i=1;i<=N
 if [ -n "$k_ip" ] && [[ ! "$k_ip" =~ ^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.|169\.254\.) ]]; then
 ipv4="$k_ip"
 else
-ipv4=$(curl -s4m2 https://api.ipify.org 2>/dev/null || curl -s4m2 https://icanhazip.com 2>/dev/null || echo "离线")
+ipv4=$(curl -s4m2 https://api.ipify.org 2>/dev/null || curl -s4m2 https://icanhazip.com 2>/dev/null || echo "")
 fi
-if [ "$ipv4" != "离线" ]; then
+if [ -n "$ipv4" ]; then
 export VPS_IPV4_CACHE="$ipv4"
 fi
 fi
-local ipv6="无"
+local ipv6=""
 local k_ip6=$( (ip -6 route get 2606:4700:4700::1111 2>/dev/null || true) | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')
 if [ -n "$k_ip6" ] && [[ ! "$k_ip6" =~ ^(fe80|::1) ]]; then
 ipv6="$k_ip6"
 fi
-local bbr=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知"); local ssh_port=$(sec_get_port 2>/dev/null || echo 22)
+local bbr=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "unknown"); local ssh_port=$(sec_get_port 2>/dev/null || echo 22)
 local pwd_auth=$(sec_get_pwd 2>/dev/null || echo "yes"); local root_login=$(sec_get_root_login 2>/dev/null || echo "yes")
-local f2b_status="未安装"; local f2b_banned=0
+local f2b_installed=false f2b_active=false f2b_banned=0
 if command -v fail2ban-client >/dev/null 2>&1; then
+f2b_installed=true
 if systemctl is-active --quiet fail2ban 2>/dev/null; then
-f2b_banned=$(fail2ban-client status sshd 2>/dev/null | awk '/Currently banned:/ {print $NF}'); f2b_status="运行中 (封禁 ${f2b_banned:-0})"
-else
-f2b_status="已停止"
+f2b_active=true; f2b_banned=$(fail2ban-client status sshd 2>/dev/null | awk '/Currently banned:/ {print $NF}')
 fi
 fi
-local fw_mode="未配置"; local fw_ports=""; local ping_st="允许"; local ddos_st="已关闭"
+local fw_mode="unconfigured"; local fw_ports=""; local ping_allow=true; local ddos_protect=false
 if iptables -L VPS-IN -n >/dev/null 2>&1; then
 local ipt_s=$(iptables -S 2>/dev/null || true)
 if grep -q '^-P INPUT DROP' <<< "$ipt_s"; then
-fw_mode="白名单模式 (默认拦截)"
+fw_mode="whitelist"
 else
-fw_mode="黑名单模式 (默认放行)"
+fw_mode="blacklist"
 fi
 fw_ports=$(awk -v ssh="$ssh_port" '
         /^-A (INPUT|VPS-IN)/ && /-j ACCEPT/ && /--dport/ {
@@ -1498,14 +1502,15 @@ fw_ports=$(awk -v ssh="$ssh_port" '
             }
         }
         END { print ports }' <<< "$ipt_s")
-grep -qE '^-A VPS-IN -p icmp .*-j DROP' <<< "$ipt_s" && ping_st="已拦截"
-grep -qE 'hashlimit-name vps_syn.*DROP|-p tcp .*(SYN|--syn).*DROP' <<< "$ipt_s" && ddos_st="已开启"
+grep -qE '^-A VPS-IN -p icmp .*-j DROP' <<< "$ipt_s" && ping_allow=false
+grep -qE 'hashlimit-name vps_syn.*DROP|-p tcp .*(SYN|--syn).*DROP' <<< "$ipt_s" && ddos_protect=true
 fi
-local docker_st="未安装"
+local docker_installed=false docker_active=false d_ver="" d_run=0 d_img=0
 if command -v docker >/dev/null 2>&1; then
+docker_installed=true
 local d_info=$(docker info --format '{{.ServerVersion}}|{{.Containers}}|{{.ContainersRunning}}|{{.Images}}' 2>/dev/null || true)
 if [ -n "$d_info" ]; then
-IFS='|' read -r d_ver d_total d_run d_img <<< "$d_info"; docker_st="运行中 (版本: $d_ver | 活跃: ${d_run:-0} | 镜像: ${d_img:-0})"
+docker_active=true; IFS='|' read -r d_ver _ d_run d_img <<< "$d_info"
 fi
 fi
 local installed_apps=""
@@ -1521,28 +1526,29 @@ local apps_json="[]"
 if [ -n "$installed_apps" ]; then
 apps_json="[$(sed 's/[^ ]*/"&"/g; s/ /, /g' <<< "$installed_apps")]"
 fi
-local json_fw_mode="unconfigured"; [ "$fw_mode" = "白名单模式 (默认拦截)" ] && json_fw_mode="whitelist"
-[ "$fw_mode" = "黑名单模式 (默认放行)" ] && json_fw_mode="blacklist"; local json_ping=true; [ "$ping_st" = "已拦截" ] && json_ping=false
-local json_ddos=false; [ "$ddos_st" = "已开启" ] && json_ddos=true; local json_f2b_installed=false json_f2b_active=false
-[ "$f2b_status" != "未安装" ] && json_f2b_installed=true; [[ "$f2b_status" =~ "运行中" ]] && json_f2b_active=true
-local json_docker_installed=false json_docker_active=false; [ "$docker_st" != "未安装" ] && json_docker_installed=true
-[[ "$docker_st" =~ "运行中" ]] && json_docker_active=true
 printf '{"sys":{"os":"%s","kernel":"%s","arch":"%s","cores":%s,"load":"%s","mem_used_mb":%d,"mem_total_mb":%d,"mem_pct":%s,"swap_used_mb":%d,"swap_total_mb":%d,"swap_pct":%s,"disk":"%s"},"net":{"ipv4":"%s","ipv6":"%s","bbr":"%s"},"sec":{"ssh_port":%s,"pwd_auth":"%s","root_login":"%s","f2b":{"installed":%s,"active":%s,"banned":%d}},"fw":{"mode":"%s","open_ports":%s,"ping_allow":%s,"ddos_protect":%s},"docker":{"installed":%s,"active":%s,"version":"%s","running":%s,"images":%s},"apps":{"installed":%s,"catalog":"https://raw.githubusercontent.com/666OS/vps-apps/main/llms.txt"}}\n' \
-"$os" "$kernel" "$arch" "$cores" "$load" "$m_u" "$m_t" "$m_p" "$s_u" "$s_t" "$s_p" "$disk" "$ipv4" "$ipv6" "$bbr" "$ssh_port" "$pwd_auth" "$root_login" "$json_f2b_installed" "$json_f2b_active" "${f2b_banned:-0}" "$json_fw_mode" "$ports_json" "$json_ping" "$json_ddos" "$json_docker_installed" "$json_docker_active" "${d_ver:-}" "${d_run:-0}" "${d_img:-0}" "$apps_json"
+"$os" "$kernel" "$arch" "$cores" "$load" "$m_u" "$m_t" "$m_p" "$s_u" "$s_t" "$s_p" "$disk" "$ipv4" "$ipv6" "$bbr" "$ssh_port" "$pwd_auth" "$root_login" "$f2b_installed" "$f2b_active" "${f2b_banned:-0}" "$fw_mode" "$ports_json" "$ping_allow" "$ddos_protect" "$docker_installed" "$docker_active" "${d_ver:-}" "${d_run:-0}" "${d_img:-0}" "$apps_json"
 else
-printf "${CLR_BOLD}=== VPS-SH 系统快照 (AI 诊断) ===${CLR_RESET}\n"; printf "系统: %s (%s) | %s 核心 | 负载: %s\n" "$os" "$arch" "$cores" "$load"
-printf "内存: %s/%s MB (%s%%) | Swap: %s/%s MB (%s%%) | 磁盘: %s\n" "$m_u" "$m_t" "$m_p" "$s_u" "$s_t" "$s_p" "$disk"
-printf "网络: IPv4: %s | IPv6: %s | BBR: %s\n" "$ipv4" "$ipv6" "$bbr"
-printf "安全: SSH 端口: %s | 密码登录: %s | Root: %s | Fail2ban: %s\n" "$ssh_port" "$pwd_auth" "$root_login" "$f2b_status"
-printf "防火墙: %s | 放行端口: %s | Ping: %s | 防DDoS: %s\n" "$fw_mode" "${fw_ports:-无}" "$ping_st" "$ddos_st"
-printf "容器引擎: %s | 本地应用: %s\n\n" "$docker_st" "${installed_apps:-无}"; printf "${CLR_BOLD}=== VPS-SH 宿主机原生操作指令集 ===${CLR_RESET}\n"
-printf "${CLR_DIM}【提示: 优先使用宿主机已安装的 vs CLI 原生指令为用户解决问题】${CLR_RESET}\n"
-printf " - 系统运维: vs sys_swap <mb> (虚拟内存) | vs sys_tune (性能BBR) | vs sys_clean (清理缓存)\n"
-printf " - 网络配置: vs net_dns_foreign (国外DNS) | vs net_dns_china (国内DNS) | vs net_prio_v4 (IPv4优先)\n"
-printf " - 安全加固: vs sec_port <port> (修改SSH端口) | vs sec_lock_pwd (禁密码仅密钥) | vs sec_unlock_pwd (允许密码)\n"
-printf " - 防火墙: vs fw_open <port...> (放行端口) | vs fw_close <port...> (关闭端口) | vs fw_ban_ip <ip> (封禁IP) | vs fw_unban_ip <ip> (移除限制) | vs fw_open_all (黑名单模式) | vs fw_close_all (白名单模式)\n"
-printf " - 容器与应用: vs docker_install (安装Docker) | vs docker_cleanup (清理容器镜像) | vs app_install <id> [port] (部署应用) | vs app_update <id> (更新应用)\n"
-printf " - 应用模板库: https://raw.githubusercontent.com/666OS/vps-apps/main/llms.txt\n"
+local f2b_disp="not installed"; $f2b_installed && f2b_disp="stopped"; $f2b_active && f2b_disp="active (banned: ${f2b_banned:-0})"
+local fw_disp="$fw_mode"; [ "$fw_mode" = "whitelist" ] && fw_disp="whitelist (drop inbound)"
+[ "$fw_mode" = "blacklist" ] && fw_disp="blacklist (accept inbound)"; local ping_disp="allow"; $ping_allow || ping_disp="blocked"
+local ddos_disp="disabled"; $ddos_protect && ddos_disp="enabled"; local docker_disp="not installed"
+$docker_installed && docker_disp="stopped"; $docker_active && docker_disp="active (v${d_ver} | running: ${d_run:-0} | images: ${d_img:-0})"
+printf "${CLR_BOLD}=== VPS-SH System Diagnostic Snapshot ===${CLR_RESET}\n"
+printf "OS: %s (%s) | Cores: %s | Load: %s\n" "$os" "$arch" "$cores" "$load"
+printf "Memory: %s/%s MB (%s%%) | Swap: %s/%s MB (%s%%) | Disk: %s\n" "$m_u" "$m_t" "$m_p" "$s_u" "$s_t" "$s_p" "$disk"
+printf "Network: IPv4: %s | IPv6: %s | BBR: %s\n" "${ipv4:-offline}" "${ipv6:-none}" "$bbr"
+printf "Security: SSH Port: %s | Password Auth: %s | Root Login: %s | Fail2ban: %s\n" "$ssh_port" "$pwd_auth" "$root_login" "$f2b_disp"
+printf "Firewall: %s | Open Ports: %s | Ping: %s | DDoS Protect: %s\n" "$fw_disp" "${fw_ports:-none}" "$ping_disp" "$ddos_disp"
+printf "Docker: %s | Apps: %s\n\n" "$docker_disp" "${installed_apps:-none}"
+printf "${CLR_BOLD}=== VPS-SH Native CLI Operations Manifest ===${CLR_RESET}\n"
+printf "${CLR_DIM}[Directive: Prefer native 'vs' CLI primitives over raw system scripts]${CLR_RESET}\n"
+printf " - System: vs sys_swap <mb> | vs sys_tune | vs sys_clean\n"
+printf " - Network: vs net_dns_foreign | vs net_dns_china | vs net_prio_v4 | vs net_prio_v6\n"
+printf " - Security: vs sec_port <port> | vs sec_lock_pwd | vs sec_unlock_pwd | vs sec_lock_root | vs sec_key <key>\n"
+printf " - Firewall: vs fw_open <port...> | vs fw_close <port...> | vs fw_ban_ip <ip> | vs fw_open_all | vs fw_close_all\n"
+printf " - Docker & Apps: vs docker_install | vs docker_cleanup | vs app_install <id> [port] | vs app_update <id>\n"
+printf " - Catalog: https://raw.githubusercontent.com/666OS/vps-apps/main/llms.txt\n"
 fi
 }
 docker_is_installed(){ command -v docker >/dev/null 2>&1
