@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="a5b9088"; VPS_BUILD_TIME="2026-11-04 12:22"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="de66b17"; VPS_BUILD_TIME="2026-11-04 12:51"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -1589,8 +1589,7 @@ local a=$(echo "$meta" | cut -d'|' -f5); [ -n "$a" ] && { echo "$a"; return 0; }
 fi
 echo ""
 }
-app_install(){ require_root; local name="$1"; local port="${2:-}"; local host="${3:-0.0.0.0}"; local token="${4:-}"
-[ "$host" = "127.0.0.1" ] || host="0.0.0.0"
+app_install(){ require_root; local name="$1"; local port="${2:-}"; local host="${3:-0.0.0.0}"; [ "$host" = "127.0.0.1" ] || host="0.0.0.0"
 if ! app_valid_name "$name"; then
 printf "${CLR_RED}错误: 非法应用名称${CLR_RESET}\n" >&2; return 1
 fi
@@ -1606,22 +1605,30 @@ if app_port_in_use "$port"; then
 printf "${CLR_RED}错误: 端口 [%s] 已被占用${CLR_RESET}\n" "$port" >&2; return 1
 fi
 fi
-app_init_dir; mkdir -p "$dir"; chmod 700 "$dir"
+local orig_umask=$(umask); umask 077; app_init_dir; mkdir -p "$dir"
 if ! app_cloud_compose "$name" > "$dir/compose.yaml" 2>/dev/null || [ ! -s "$dir/compose.yaml" ]; then
-rm -rf "$dir"; printf "${CLR_RED}错误: 无法获取应用 [%s] 的模板配置${CLR_RESET}\n" "$name" >&2; return 1
+rm -rf "$dir"; umask "$orig_umask"; printf "${CLR_RED}错误: 无法获取应用 [%s] 的模板配置${CLR_RESET}\n" "$name" >&2; return 1
 fi
 local gen_pwd=""
 if grep -q '\${APP_PASSWORD' "$dir/compose.yaml" 2>/dev/null; then
 gen_pwd=$(LC_ALL=C tr -dc 'a-zA-Z0-9' < /dev/urandom 2>/dev/null | head -c 16 || openssl rand -hex 8 2>/dev/null || date +%s%N | head -c 16)
 fi
-if [ -z "$token" ] && grep -q '\${TUNNEL_TOKEN' "$dir/compose.yaml" 2>/dev/null; then
-if [ -t 0 ]; then
-printf "${CLR_CYAN}请输入 Cloudflare Tunnel Token (回车跳过稍后配置): ${CLR_RESET}"; read -r token
+local clean_token=""
+if grep -q '\${TUNNEL_TOKEN' "$dir/compose.yaml" 2>/dev/null; then
+local raw_token="${TUNNEL_TOKEN:-${APP_TOKEN:-}}"
+if [ -z "$raw_token" ] && [ -t 0 ]; then
+printf "${CLR_CYAN}请输入 Cloudflare Tunnel Token (输入已隐蔽，回车跳过): ${CLR_RESET}"; read -r -s raw_token; echo
+fi
+if [ -n "$raw_token" ]; then
+clean_token=$(printf '%s' "$raw_token" | tr -dc 'a-zA-Z0-9_\-=')
+if [ -n "$clean_token" ]; then
+printf "${CLR_GREEN}✓ 令牌已安全接收 (${#clean_token} 字符)${CLR_RESET}\n"
+fi
 fi
 fi
 { printf "APP_HOST=%s\n" "$host"; [ -n "$port" ] && [ "$port" != "-" ] && printf "APP_PORT=%s\n" "$port"
-[ -n "$gen_pwd" ] && printf "APP_PASSWORD=%s\n" "$gen_pwd"; [ -n "$token" ] && printf "TUNNEL_TOKEN=%s\n" "$token"; } > "$dir/.env"
-chmod 600 "$dir/.env"
+[ -n "$gen_pwd" ] && printf "APP_PASSWORD=%s\n" "$gen_pwd"; [ -n "$clean_token" ] && printf "TUNNEL_TOKEN=%s\n" "$clean_token"
+} > "$dir/.env"; umask "$orig_umask"
 if (cd "$dir" && docker compose up -d); then
 if [ "$host" = "0.0.0.0" ] && [ -n "$port" ] && [ "$port" != "-" ] && fw_is_initialized 2>/dev/null; then
 fw_open "$port" 2>/dev/null || true
