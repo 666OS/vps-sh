@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="f80e81a"; VPS_BUILD_TIME="2026-11-04 22:16"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="ae04b88"; VPS_BUILD_TIME="2026-11-04 22:22"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -874,6 +874,22 @@ done
 VPS_FW_CONF="/etc/vps-sh/fw.conf"; fw_is_installed(){ command -v iptables >/dev/null 2>&1 && command -v ipset >/dev/null 2>&1
 }
 fw_is_initialized(){ [ -f "$VPS_FW_CONF" ] || iptables -L VPS-IN -n >/dev/null 2>&1
+}
+fw_conflict(){
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+echo "ufw"; return 0
+fi
+if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+echo "firewalld"; return 0
+fi
+return 1
+}
+fw_resolve_conflict(){ require_root; local c=$(fw_conflict || true)
+if [ "$c" = "ufw" ]; then
+ufw disable 2>/dev/null || true; systemctl disable ufw 2>/dev/null || true; printf "${CLR_GREEN}已停用 UFW${CLR_RESET}\n"
+elif [ "$c" = "firewalld" ]; then systemctl disable --now firewalld 2>/dev/null || true; printf "${CLR_GREEN}已停用 Firewalld${CLR_RESET}\n"
+fi
+fw_install
 }
 fw_conf_load(){ FW_MODE="blacklist"; FW_PORTS=""; FW_PING="on"; FW_DDOS="off"; [ -f "$VPS_FW_CONF" ] || return 1; local k v
 while IFS='=' read -r k v; do
