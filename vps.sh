@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="14dbf3c"; VPS_BUILD_TIME="2026-11-04 20:43"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="b7cf922"; VPS_BUILD_TIME="2026-11-04 21:09"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -882,7 +882,7 @@ local out_of_order4=0; iptables -S VPS-IN 2>/dev/null | awk '/--dport/ {d=1} /vp
 if ! iptables -w 2 -C VPS-IN -m set --match-set vps_blacklist src -j DROP 2>/dev/null || [ "$out_of_order4" -eq 1 ]; then
 iptables -w 2 -D VPS-IN -m set --match-set vps_blacklist src -j DROP 2>/dev/null || true
 iptables -w 2 -D VPS-IN -m set --match-set vps_whitelist src -j ACCEPT 2>/dev/null || true
-local pos4=$(iptables -L VPS-IN --line-numbers -n 2>/dev/null | awk '/--dport/ {print $1; exit}')
+local pos4=$(iptables -S VPS-IN 2>/dev/null | awk '/^-A/ {r++} /--dport/ {print r; exit}')
 if [ -n "$pos4" ]; then
 iptables -w 2 -I VPS-IN "$pos4" -m set --match-set vps_whitelist src -j ACCEPT 2>/dev/null || true
 iptables -w 2 -I VPS-IN "$pos4" -m set --match-set vps_blacklist src -j DROP 2>/dev/null || true
@@ -904,7 +904,7 @@ if ! ip6tables -w 2 -C VPS-IN -p ipv6-icmp -j ACCEPT 2>/dev/null || \
 [ "$out_of_order6" -eq 1 ]; then ip6tables -w 2 -D VPS-IN -m set --match-set vps_blacklist6 src -j DROP 2>/dev/null || true
 ip6tables -w 2 -D VPS-IN -m set --match-set vps_whitelist6 src -j ACCEPT 2>/dev/null || true
 ip6tables -w 2 -D VPS-IN -p ipv6-icmp -j ACCEPT 2>/dev/null || true
-local pos6=$(ip6tables -L VPS-IN --line-numbers -n 2>/dev/null | awk '/--dport/ {print $1; exit}')
+local pos6=$(ip6tables -S VPS-IN 2>/dev/null | awk '/^-A/ {r++} /--dport/ {print r; exit}')
 if [ -n "$pos6" ]; then
 ip6tables -w 2 -I VPS-IN "$pos6" -m set --match-set vps_whitelist6 src -j ACCEPT 2>/dev/null || true
 ip6tables -w 2 -I VPS-IN "$pos6" -m set --match-set vps_blacklist6 src -j DROP 2>/dev/null || true
