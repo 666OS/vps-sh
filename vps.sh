@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="0661895"; VPS_BUILD_TIME="2026-11-04 22:34"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="40b3952"; VPS_BUILD_TIME="2026-11-04 22:43"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -141,7 +141,8 @@ local src=$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$
 if [ "$src" != "/usr/local/bin/vs" ]; then
 [ -f /usr/local/bin/vs ] || registered=1; cmp -s "$src" /usr/local/bin/vs 2>/dev/null || cp -f "$src" /usr/local/bin/vs
 fi
-elif [ ! -f /usr/local/bin/vs ]; then curl -fsSL "$VPS_RAW_URL/vps.sh" -o /usr/local/bin/vs 2>/dev/null && registered=1 || return 0
+elif [ ! -f /usr/local/bin/vs ]; then
+curl -fsSL "$VPS_RAW_URL/vps.sh" -o /usr/local/bin/.vs.boot 2>/dev/null && mv -f /usr/local/bin/.vs.boot /usr/local/bin/vs && registered=1 || { rm -f /usr/local/bin/.vs.boot 2>/dev/null; return 0; }
 fi
 chmod 755 /usr/local/bin/vs 2>/dev/null || true; [ -L /usr/bin/vs ] || ln -sf /usr/local/bin/vs /usr/bin/vs 2>/dev/null || true
 fw_heal 2>/dev/null || true; [ "$registered" -eq 1 ] && echo -e "${CLR_CYAN}已注册全局命令: vs${CLR_RESET}" >&2 || true
@@ -1379,47 +1380,59 @@ ops_update_badge(){ local cache="${VPS_CACHE_DIR:-/tmp}/update_meta"; local now=
 if [ $((now - mtime)) -gt 21600 ]; then
 touch "$cache" 2>/dev/null || true
 (
-local rver=$(curl -fsSLm 2 "$VPS_RAW_URL/vps.sh" 2>/dev/null | head -n 40 | grep -o 'VPS_VERSION="[^"]*"' | head -n 1 | cut -d'"' -f2 || true)
-[ -n "$rver" ] && echo "$rver" > "$cache"; ) &
+local meta=$(curl -fsSLm 2 "$VPS_RAW_URL/vps.sh" 2>/dev/null | head -n 40 || true)
+local rver=$(grep -o 'VPS_VERSION="[^"]*"' <<< "$meta" | head -n 1 | cut -d'"' -f2 || true)
+local rdate=$(grep -o 'VPS_BUILD_TIME="[^"]*"' <<< "$meta" | head -n 1 | cut -d'"' -f2 || true)
+if [ -n "$rver" ] && [ "$rver" != "$VPS_VERSION" ]; then
+if [ -z "$rdate" ] || [[ "$rdate" > "$VPS_BUILD_TIME" ]]; then
+echo "$rver" > "$cache"
+else
+rm -f "$cache"
+fi
+else
+rm -f "$cache"
+fi
+) &
 fi
 local cached_ver=$(cat "$cache" 2>/dev/null || true)
 if [ -n "$cached_ver" ] && [ "$cached_ver" != "$VPS_VERSION" ]; then
 printf " ${CLR_YELLOW}[新版本: %s]${CLR_RESET}" "$cached_ver"
 fi
 }
-ops_update(){ require_root; printf "${CLR_CYAN}检查新版本...${CLR_RESET}\n"; local tmp=$(mktemp)
+ops_update(){ require_root; printf "${CLR_CYAN}检查新版本...${CLR_RESET}\n"; mkdir -p /usr/local/bin; local tmp
+tmp=$(mktemp /usr/local/bin/.vs.XXXXXX 2>/dev/null || mktemp); trap "rm -f '$tmp'" EXIT INT TERM HUP
 if ! curl -fsSLm 15 "$VPS_RAW_URL/vps.sh" -o "$tmp"; then
-rm -f "$tmp"; printf "${CLR_RED}错误: 无法获取远端脚本${CLR_RESET}\n" >&2; return 1
+rm -f "$tmp"; trap - EXIT INT TERM HUP; printf "${CLR_RED}错误: 无法获取远端脚本${CLR_RESET}\n" >&2; return 1
 fi
 if ! bash -n "$tmp" 2>/dev/null; then
-rm -f "$tmp"; printf "${CLR_RED}错误: 脚本语法校验失败${CLR_RESET}\n" >&2; return 1
+rm -f "$tmp"; trap - EXIT INT TERM HUP; printf "${CLR_RED}错误: 脚本语法校验失败${CLR_RESET}\n" >&2; return 1
 fi
 local remote_ver=$(grep -o 'VPS_VERSION="[^"]*"' "$tmp" 2>/dev/null | head -n 1 | cut -d'"' -f2 || true)
 local remote_date=$(grep -o 'VPS_BUILD_TIME="[^"]*"' "$tmp" 2>/dev/null | head -n 1 | cut -d'"' -f2 || true)
 if [ -z "$remote_ver" ]; then
-rm -f "$tmp"; printf "${CLR_RED}错误: 解析远端版本信息失败${CLR_RESET}\n" >&2; return 1
+rm -f "$tmp"; trap - EXIT INT TERM HUP; printf "${CLR_RED}错误: 解析远端版本信息失败${CLR_RESET}\n" >&2; return 1
 fi
-if [ "$remote_ver" = "$VPS_VERSION" ]; then
-rm -f "$tmp"; printf "${CLR_GREEN}已是最新版本: %s${CLR_RESET}\n" "$VPS_VERSION"; return 0
+if [ "$remote_ver" = "$VPS_VERSION" ] || [[ ! "$remote_date" > "$VPS_BUILD_TIME" ]]; then
+rm -f "$tmp"; trap - EXIT INT TERM HUP; printf "${CLR_GREEN}已是最新版本: %s${CLR_RESET}\n" "$VPS_VERSION"; return 0
 fi
 printf "\n${CLR_BOLD}发现新版本: ${CLR_GREEN}%s${CLR_RESET} ${CLR_DIM}(当前: %s)${CLR_RESET}\n" "$remote_ver" "$VPS_VERSION"
 [ -n "$remote_date" ] && printf "${CLR_DIM}发布时间: %s${CLR_RESET}\n\n" "$remote_date"; local confirm="${1:-}"
 if [ "$confirm" != "-y" ] && [ "$confirm" != "--yes" ]; then
 if [ ! -t 0 ]; then
-rm -f "$tmp"; printf "${CLR_RED}错误: 非交互环境请使用: vs up -y${CLR_RESET}\n" >&2; return 1
+rm -f "$tmp"; trap - EXIT INT TERM HUP; printf "${CLR_RED}错误: 非交互环境请使用: vs up -y${CLR_RESET}\n" >&2; return 1
 fi
 read -r -p "确认更新? (y/N, 回车取消): " confirm
 fi
 case "$confirm" in
 [yY][eE][sS]|[yY]|-y|--yes)
-chmod 755 "$tmp"; mv -f "$tmp" /usr/local/bin/vs; rm -f "${VPS_CACHE_DIR:-/tmp}/update_meta" 2>/dev/null || true
+chmod 755 "$tmp"; mv -f "$tmp" /usr/local/bin/vs; trap - EXIT INT TERM HUP; rm -f "${VPS_CACHE_DIR:-/tmp}/update_meta" 2>/dev/null || true
 [ -L /usr/bin/vs ] || ln -sf /usr/local/bin/vs /usr/bin/vs 2>/dev/null || true
-if iptables -C INPUT -j VPS-IN 2>/dev/null; then
-/usr/local/bin/vs fw_init >/dev/null 2>&1 || true; /usr/local/bin/vs fw_save >/dev/null 2>&1 || true
+if [ -f /etc/vps-sh/fw.conf ] || iptables -C INPUT -j VPS-IN 2>/dev/null; then
+/usr/local/bin/vs fw_apply >/dev/null 2>&1 || true; /usr/local/bin/vs fw_save >/dev/null 2>&1 || true
 fi
 printf "${CLR_GREEN}已更新至 %s${CLR_RESET}\n" "$remote_ver"; exit 0; ;;
 *)
-rm -f "$tmp"; echo "已取消"; ;;
+rm -f "$tmp"; trap - EXIT INT TERM HUP; echo "已取消"; ;;
 esac
 }
 ui_ops_ports(){ clear; local raw=$(ss -tulpn 2>/dev/null || true); local total=$(printf "%s\n" "$raw" | awk 'NR>1 {c++} END {print c+0}')
