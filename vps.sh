@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="93d8ba1"; VPS_BUILD_TIME="2026-11-04 14:10"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="6722e5b"; VPS_BUILD_TIME="2026-11-04 15:44"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -27,14 +27,31 @@ local cpu=$(LC_ALL=C lscpu 2>/dev/null | awk -F':' '/Model name/{sub(/^[ \t]+/, 
 [ -n "$cpu" ] || cpu=$(awk -F':' '/model name|Hardware|Processor|^Model/{sub(/^[ \t]+/, "", $2); print $2; exit}' /proc/cpuinfo 2>/dev/null || true)
 [ -n "$cpu" ] || cpu=$(uname -m); local cores=$(nproc 2>/dev/null || echo 1)
 local uptime=$(awk '{d=int($1/86400); h=int(($1%86400)/3600); m=int(($1%3600)/60); if(d>0) printf "%d天 %d小时 %d分", d, h, m; else if(h>0) printf "%d小时 %d分", h, m; else printf "%d分", (m>0?m:1)}' /proc/uptime 2>/dev/null || echo "未知")
-local mem=$(free -m | awk 'NR==2{printf "%s/%s MB (%.1f%%)", $3, $2, $3*100/$2}'); local swap=$(sys_swap_snapshot)
-[ "$swap" = "未启用" ] && swap="无"; local disk=$(df -h / | awk 'NR==2{printf "%s/%s (%s)", $3, $2, $5}')
+local mem="" swap="无"
+local mem_out=$(free -m 2>/dev/null | awk '
+        NR==2 {m=sprintf("%s/%s MB (%.1f%%)", $3, $2, $3*100/$2)}
+        NR==3 {if($2>0) s=sprintf("%s/%s MB (%.1f%%)", $3, $2, $3*100/$2); else s="无"}
+        END {printf "%s|%s", m, (s?s:"无")}
+    ')
+[ -n "$mem_out" ] && IFS='|' read -r mem swap <<< "$mem_out"; local disk=$(df -h / | awk 'NR==2{printf "%s/%s (%s)", $3, $2, $5}')
 local load=$(awk '{print $1", "$2", "$3}' /proc/loadavg 2>/dev/null || uptime | awk -F'load average: ' '{print $2}')
-local bbr=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知")
-local ipv4=$(curl -s4m2 https://api.ipify.org 2>/dev/null || curl -s4m2 https://icanhazip.com 2>/dev/null || echo "离线")
-local ipv6=$(ip -6 route get 2606:4700:4700::1111 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')
+local bbr=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知"); local ipv4="${VPS_IPV4_CACHE:-}"
+if [ -z "$ipv4" ]; then
+local k_ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')
+if [ -n "$k_ip" ] && [[ ! "$k_ip" =~ ^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.|169\.254\.) ]]; then
+ipv4="$k_ip"
+else
+ipv4=$(curl -s4m2 https://api.ipify.org 2>/dev/null || curl -s4m2 https://icanhazip.com 2>/dev/null || echo "离线")
+fi
+[ "$ipv4" != "离线" ] && export VPS_IPV4_CACHE="$ipv4"
+fi
+local ipv6="${VPS_IPV6_CACHE:-}"
+if [ -z "$ipv6" ]; then
+ipv6=$(ip -6 route get 2606:4700:4700::1111 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')
 [ -n "$ipv6" ] || ipv6=$(ip -6 addr show scope global -deprecated 2>/dev/null | awk '/inet6 [23]/ {split($2, a, "/"); print a[1]; exit}')
 [ -n "$ipv6" ] || ipv6=$(curl -s6m1 https://api64.ipify.org 2>/dev/null || echo "无")
+[ -n "$ipv6" ] && [ "$ipv6" != "无" ] && export VPS_IPV6_CACHE="$ipv6"
+fi
 printf "${CLR_BOLD}系统:${CLR_RESET}     %s\n" "$os ($kernel)"; printf "${CLR_BOLD}处理器:${CLR_RESET}   %s (%s 核心)\n" "$cpu" "$cores"
 printf "${CLR_BOLD}运行:${CLR_RESET}     在线: %s | ${CLR_BOLD}系统负载:${CLR_RESET} %s\n" "$uptime" "$load"
 printf "${CLR_BOLD}内存:${CLR_RESET}     %s | ${CLR_BOLD}虚拟内存:${CLR_RESET} %s\n" "$mem" "$swap"
@@ -272,8 +289,14 @@ done
 ui_net_trace(){
 while true; do
 clear; local cur_ip=$(echo "${SSH_CLIENT:-${SSH_CONNECTION:-}}" | awk '{print $1}'); local nt_status="未安装"
-command -v nexttrace >/dev/null 2>&1 && nt_status="已就绪"
-local local_ip=$(curl -s4m2 https://api.ipify.org 2>/dev/null || curl -s4m2 https://icanhazip.com 2>/dev/null || echo "未知")
+command -v nexttrace >/dev/null 2>&1 && nt_status="已就绪"; local local_ip="${VPS_IPV4_CACHE:-}"
+if [ -z "$local_ip" ]; then
+local_ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')
+if [ -z "$local_ip" ] || [[ "$local_ip" =~ ^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.|169\.254\.) ]]; then
+local_ip=$(curl -s4m2 https://api.ipify.org 2>/dev/null || curl -s4m2 https://icanhazip.com 2>/dev/null || echo "未知")
+fi
+[ "$local_ip" != "未知" ] && export VPS_IPV4_CACHE="$local_ip"
+fi
 printf "${CLR_BOLD}--- 回程路由诊断 ---${CLR_RESET}\n"; printf "${CLR_DIM}本机 IPv4:${CLR_RESET}   %s\n" "$local_ip"
 printf "${CLR_DIM}连接来源:${CLR_RESET}   %s\n" "${cur_ip:-本地控制台}"; printf "${CLR_DIM}NextTrace:${CLR_RESET}  %s\n\n" "$nt_status"
 printf "${CLR_CYAN}[1]${CLR_RESET} 四网快速测试 (电信/联通/移动/教育网)\n"
@@ -340,9 +363,22 @@ fw_save 2>/dev/null || true; [ -d /etc/fail2ban/jail.d ] && sec_f2b_sync 2>/dev/
 }
 sec_port_restore(){ sec_port 22
 }
-sec_list_sudoers(){ awk -F: '$3 >= 1000 && $3 < 60000 {print $1}' /etc/passwd | while read -r u; do
-if id -nG "$u" 2>/dev/null | grep -Eq '\b(sudo|wheel)\b' || [ -f "/etc/sudoers.d/90-$u" ]; then
-echo "$u"
+sec_list_sudoers(){
+awk -F: '
+    FILENAME=="/etc/group" && ($1=="sudo" || $1=="wheel") {
+        sudo_gid[$3]=1
+        n=split($4, members, ",")
+        for(i=1; i<=n; i++) if(members[i]!="") sudo_users[members[i]]=1
+    }
+    FILENAME=="/etc/passwd" && $3>=1000 && $3<60000 {
+        if(sudo_gid[$4] || sudo_users[$1]) {
+            if(!seen[$1]) { print $1; seen[$1]=1 }
+        }
+    }
+    ' /etc/group /etc/passwd 2>/dev/null
+for f in /etc/sudoers.d/90-*; do
+if [ -f "$f" ]; then
+local u="${f##*90-}"; [ -n "$u" ] && [ "$u" != "*" ] && id -u "$u" >/dev/null 2>&1 && echo "$u"
 fi
 done
 }
@@ -516,7 +552,7 @@ local parsed=$(sshd -T 2>/dev/null | awk '
 if [ "$root_login" = "prohibit-password" ] || [ "$root_login" = "without-password" ]; then
 root_desc="${CLR_YELLOW}仅限密钥${CLR_RESET}"
 fi
-local sudoers=$(sec_list_sudoers | tr '\n' ' ' | sed 's/ $//'); local user_desc="${CLR_DIM}无${CLR_RESET}"
+local sudoers=$(sec_list_sudoers | sort -u | tr '\n' ' ' | sed 's/ $//'); local user_desc="${CLR_DIM}无${CLR_RESET}"
 [ -n "$sudoers" ] && user_desc="${CLR_CYAN}${sudoers} (sudo)${CLR_RESET}"; local fw_desc="${CLR_DIM}未配置${CLR_RESET}"
 if iptables -L VPS-IN -n >/dev/null 2>&1; then
 if iptables -S INPUT 2>/dev/null | grep -q '^-P INPUT DROP'; then
@@ -840,17 +876,19 @@ fi
 if ! fw_is_initialized; then
 printf "${CLR_BOLD}状态:${CLR_RESET} ${CLR_YELLOW}未初始化${CLR_RESET}\n"; return 0
 fi
-local ssh_port=$(sec_get_port); local in_policy=$( (iptables -S INPUT 2>/dev/null || true) | awk '/^-P INPUT/ {print $3}' )
-local policy_desc="默认丢弃 (DROP)"; [ "$in_policy" = "ACCEPT" ] && policy_desc="默认放行 (ACCEPT)"
-local bans=$( (ipset list vps_blacklist 2>/dev/null || true) | awk '/^[0-9]/ {c++} END {print c+0}' )
-local allows=$( (ipset list vps_whitelist 2>/dev/null || true) | awk '/^[0-9]/ {c++} END {print c+0}' ); local ping_status="允许"
-[ "$(fw_get_ping)" = "drop" ] && ping_status="已拦截"; local ddos_status="已关闭"; [ "$(fw_get_ddos)" = "on" ] && ddos_status="已开启"
+local ssh_port=$(sec_get_port); local ipt_rules=$(iptables -S 2>/dev/null || true)
+local in_policy=$(awk '/^-P INPUT/ {print $3}' <<< "$ipt_rules"); local policy_desc="默认丢弃 (DROP)"
+[ "$in_policy" = "ACCEPT" ] && policy_desc="默认放行 (ACCEPT)"
+local bans=$(ipset list -t vps_blacklist 2>/dev/null | awk '/Number of entries:/ {print $NF}')
+local allows=$(ipset list -t vps_whitelist 2>/dev/null | awk '/Number of entries:/ {print $NF}'); local ping_status="允许"
+grep -qE '^-A VPS-IN -p icmp .*-j DROP' <<< "$ipt_rules" && ping_status="已拦截"; local ddos_status="已关闭"
+grep -qE '^-A VPS-IN -p tcp .*(SYN|--syn) -j DROP' <<< "$ipt_rules" && ddos_status="已开启"
 printf "${CLR_BOLD}入站:${CLR_RESET} %s | ${CLR_BOLD}Ping:${CLR_RESET} %s | ${CLR_BOLD}防DDoS:${CLR_RESET} %s\n" "$policy_desc" "$ping_status" "$ddos_status"
-printf "${CLR_BOLD}黑名单:${CLR_RESET} %s IP | ${CLR_BOLD}白名单:${CLR_RESET} %s IP\n\n" "$bans" "$allows"
+printf "${CLR_BOLD}黑名单:${CLR_RESET} %s IP | ${CLR_BOLD}白名单:${CLR_RESET} %s IP\n\n" "${bans:-0}" "${allows:-0}"
 printf " ${CLR_DIM}%-9s %-18s %s${CLR_RESET}\n" "协议" "目标/端口" "说明"; printf " %s\n" "----------------------------------------------------"
 printf " %-9s %-18s %s\n" "all" "127.0.0.1 (lo)" "本地回环"; printf " %-9s %-18s %s\n" "all" "ESTABLISHED" "已建连接"
 printf " %-9s %-18s %s\n" "tcp" "$ssh_port" "SSH 保护"
-(iptables -S 2>/dev/null || true) | awk -v ssh="$ssh_port" '
+printf "%s\n" "$ipt_rules" | awk -v ssh="$ssh_port" '
     /^-A (INPUT|VPS-IN)/ && /-j ACCEPT/ {
         proto=""; port=""
         for(i=1;i<=NF;i++) {
@@ -995,15 +1033,16 @@ read -r -p "按回车返回..."
 fi
 done
 }
-ops_snapshot(){ local ports=$(ss -tulpn 2>/dev/null | awk 'NR>1' | wc -l | tr -d ' ')
-local crons=$(crontab -l 2>/dev/null | awk '!/^[[:space:]]*(#|$)/' | wc -l | tr -d ' ')
+ops_snapshot(){ local ports=$(ss -tulpn 2>/dev/null | awk 'NR>1 {c++} END {print c+0}')
+local crons=$(crontab -l 2>/dev/null | awk '!/^[[:space:]]*(#|$)/ {c++} END {print c+0}')
 local logs=$(journalctl --disk-usage 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)?[KMGTPBkmgtpb]' | head -n 1)
 [ -z "$logs" ] && logs=$(du -sh /var/log 2>/dev/null | awk '{print $1}')
 printf "${CLR_BOLD}运维状态:${CLR_RESET} 端口: %s | 定时任务: %s | 日志: %s\n" "$ports" "$crons" "${logs:-0B}"
 }
-ops_ports(){ printf "  ${CLR_DIM}%-6s %-7s %-20s %s${CLR_RESET}\n" "协议" "端口" "监听地址" "服务进程"
+ops_ports(){ local raw="${1:-$(ss -tulpn 2>/dev/null || true)}"
+printf "  ${CLR_DIM}%-6s %-7s %-20s %s${CLR_RESET}\n" "协议" "端口" "监听地址" "服务进程"
 printf "  %s\n" "--------------------------------------------------------"
-ss -tulpn 2>/dev/null | awk 'NR>1 {
+printf "%s\n" "$raw" | awk 'NR>1 {
         proto=$1
         sub(/tcp.*/, "tcp", proto)
         sub(/udp.*/, "udp", proto)
@@ -1112,8 +1151,8 @@ exit 0; ;;
 rm -f "$tmp"; echo "已取消"; ;;
 esac
 }
-ui_ops_ports(){ clear; local total=$(ss -tulpn 2>/dev/null | awk 'NR>1' | wc -l | tr -d ' ')
-printf "${CLR_BOLD}--- 监听端口 ---${CLR_RESET}\n"; printf "${CLR_DIM}监听端口数:${CLR_RESET} %s\n\n" "$total"; ops_ports; echo
+ui_ops_ports(){ clear; local raw=$(ss -tulpn 2>/dev/null || true); local total=$(printf "%s\n" "$raw" | awk 'NR>1 {c++} END {print c+0}')
+printf "${CLR_BOLD}--- 监听端口 ---${CLR_RESET}\n"; printf "${CLR_DIM}监听端口数:${CLR_RESET} %s\n\n" "$total"; ops_ports "$raw"; echo
 read -r -p "按回车返回..."
 }
 ui_ops_disk(){
@@ -1161,7 +1200,7 @@ read -r -p "按回车返回..."
 }
 ui_ops_cron(){
 while true; do
-clear; local u_cnt=$(crontab -l 2>/dev/null | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$' | wc -l | tr -d ' ')
+clear; local u_cnt=$(crontab -l 2>/dev/null | awk '!/^[[:space:]]*(#|$)/ {c++} END {print c+0}')
 printf "${CLR_BOLD}--- 定时任务 ---${CLR_RESET}\n"; printf "${CLR_DIM}用户任务数:${CLR_RESET} %s\n\n" "$u_cnt"; ops_cron_list; echo
 printf "${CLR_CYAN}[1]${CLR_RESET} 编辑任务 (crontab -e)\n"; printf "${CLR_CYAN}[2]${CLR_RESET} 清空用户任务\n"
 printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"; read -r -p "请选择: " choice; [ -z "$choice" ] && return 0
@@ -1203,12 +1242,18 @@ docker_snapshot(){
 if ! docker_is_installed; then
 printf "${CLR_BOLD}服务状态:${CLR_RESET} ${CLR_DIM}未安装${CLR_RESET}\n"; return 0
 fi
-local status="已停止"; docker_is_active && status="运行中"; local ver=$(docker -v 2>/dev/null | awk '{print $3}' | tr -d ',')
+local status="已停止" ver=""; local total=0 running=0 stopped=0 imgs=0
+if docker_is_active; then
+status="运行中"
+local d_info=$(docker info --format '{{.ServerVersion}}|{{.Containers}}|{{.ContainersRunning}}|{{.Images}}' 2>/dev/null || true)
+if [ -n "$d_info" ]; then
+IFS='|' read -r ver total running imgs <<< "$d_info"; stopped=$((total - running)); [ "$stopped" -lt 0 ] && stopped=0
+fi
+fi
+[ -z "$ver" ] && ver=$(docker -v 2>/dev/null | awk '{print $3}' | tr -d ',')
 local compose=$(docker compose version 2>/dev/null | awk '{print $4}'); [ -n "$compose" ] && compose="| Compose: $compose" || compose=""
 printf "${CLR_BOLD}服务状态:${CLR_RESET} %s (Docker %s %s)\n" "$status" "$ver" "$compose"
 if [ "$status" = "运行中" ]; then
-local running=$(docker ps -q 2>/dev/null | wc -l | tr -d ' '); local all_c=$(docker ps -aq 2>/dev/null | wc -l | tr -d ' ')
-local stopped=$((all_c - running)); local imgs=$(docker images -q 2>/dev/null | wc -l | tr -d ' ')
 printf "${CLR_BOLD}容器统计:${CLR_RESET} %s 运行中 / %s 已停止 | ${CLR_BOLD}镜像数:${CLR_RESET} %s 个\n" "$running" "$stopped" "$imgs"
 fi
 local mirror="官方源"; local m=$(docker_get_mirrors); [ -n "$m" ] && mirror="$m"; printf "${CLR_BOLD}当前镜像源:${CLR_RESET} %s\n" "$mirror"
@@ -1495,7 +1540,7 @@ local p=$(awk -F= '$1=="APP_PORT" {print $2; exit}' "$env_file" | tr -d ' "\r');
 fi
 local meta=$(app_meta "$name" 2>/dev/null || true)
 if [ -n "$meta" ]; then
-local p=$(echo "$meta" | cut -d'|' -f2); [ -n "$p" ] && [ "$p" != "-" ] && { echo "$p"; return 0; }
+local p=""; IFS='|' read -r _ p _ <<< "$meta"; [ -n "$p" ] && [ "$p" != "-" ] && { echo "$p"; return 0; }
 fi
 local compose="/opt/vps-sh/apps/$name/compose.yaml"; [ -f "$compose" ] || compose="/opt/vps-sh/apps/$name/docker-compose.yml"
 if [ -f "$compose" ]; then
@@ -1683,8 +1728,7 @@ printf "  ${CLR_CYAN}%s${CLR_RESET} %s%s%s%s" "$num" "$name" "$tag_str" "$col_ba
 ui_app_install_single(){ local app="$1"; local meta=$(app_meta "$app" 2>/dev/null || true); local title="$app"; local default_port="8080"
 local desc=""; local auth=""; local url=""
 if [ -n "$meta" ]; then
-title=$(echo "$meta" | cut -d'|' -f1); default_port=$(echo "$meta" | cut -d'|' -f2); desc=$(echo "$meta" | cut -d'|' -f4)
-[ -z "$desc" ] && desc=$(echo "$meta" | cut -d'|' -f3); auth=$(echo "$meta" | cut -d'|' -f5); url=$(echo "$meta" | cut -d'|' -f6)
+local raw_tag=""; IFS='|' read -r title default_port raw_tag desc auth url <<< "$meta"; [ -z "$desc" ] && desc="$raw_tag"
 fi
 local port="$default_port"; local host="0.0.0.0"; local target_dir="/opt/vps-sh/apps/$app"
 while true; do
@@ -1885,7 +1929,7 @@ local display_items=()
 if [ -n "$search_kw" ]; then
 if [ "${#all_items[@]}" -gt 0 ]; then
 for item in "${all_items[@]}"; do
-local meta=$(app_meta "$item" 2>/dev/null || true); local tag=""; [ -n "$meta" ] && tag=$(echo "$meta" | cut -d'|' -f3)
+local meta=$(app_meta "$item" 2>/dev/null || true); local tag=""; [ -n "$meta" ] && IFS='|' read -r _ _ tag _ <<< "$meta"
 case "$item $tag" in
 *"$search_kw"*) display_items+=("$item") ;;
 esac
@@ -1906,11 +1950,11 @@ fi
 local i=0
 while [ $i -lt $total ]; do
 local idx1=$((i + 1)); local name1="${display_items[$i]}"; local st1=$(app_status "$name1" "$docker_snapshot")
-local meta1=$(app_meta "$name1" 2>/dev/null || true); local tag1=""; [ -n "$meta1" ] && tag1=$(echo "$meta1" | cut -d'|' -f3)
+local meta1=$(app_meta "$name1" 2>/dev/null || true); local tag1=""; [ -n "$meta1" ] && IFS='|' read -r _ _ tag1 _ <<< "$meta1"
 local c1=$(app_render_col "$idx1" "$name1" "$st1" "$tag1" 39); local c2=""; local next=$((i + 1))
 if [ $next -lt $total ]; then
 local idx2=$((next + 1)); local name2="${display_items[$next]}"; local st2=$(app_status "$name2" "$docker_snapshot")
-local meta2=$(app_meta "$name2" 2>/dev/null || true); local tag2=""; [ -n "$meta2" ] && tag2=$(echo "$meta2" | cut -d'|' -f3)
+local meta2=$(app_meta "$name2" 2>/dev/null || true); local tag2=""; [ -n "$meta2" ] && IFS='|' read -r _ _ tag2 _ <<< "$meta2"
 c2=$(app_render_col "$idx2" "$name2" "$st2" "$tag2" 0)
 fi
 printf "%s%s\n" "$c1" "$c2"; i=$((i + 2))
