@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="a4c7fbd"; VPS_BUILD_TIME="2026-11-04 13:32"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="93d8ba1"; VPS_BUILD_TIME="2026-11-04 14:10"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -503,9 +503,16 @@ fi
 rm -f "/etc/sudoers.d/90-$u"; pkill -u "$u" 2>/dev/null || true; userdel -r "$u" 2>/dev/null || true
 printf "${CLR_GREEN}已删除用户 %s${CLR_RESET}\n" "$u"
 }
-sec_snapshot(){ local port=$(sec_get_port); local pwd_status="${CLR_GREEN}允许${CLR_RESET}"
-[ "$(sec_get_pwd)" = "no" ] && pwd_status="${CLR_YELLOW}仅限密钥${CLR_RESET}"; local root_login=$(sec_get_root_login)
-local root_desc="${CLR_GREEN}允许${CLR_RESET}"; [ "$root_login" = "no" ] && root_desc="${CLR_RED}禁止${CLR_RESET}"
+sec_snapshot(){ local port="22" pwd_auth="yes" root_login="prohibit-password"
+local parsed=$(sshd -T 2>/dev/null | awk '
+        /^port / && !p {p=$2}
+        /^passwordauthentication / && !a {a=$2}
+        /^permitrootlogin / && !r {r=$2}
+        END {printf "%s %s %s", (p?p:"22"), (a?a:"yes"), (r?r:"prohibit-password")}
+    ')
+[ -n "$parsed" ] && read -r port pwd_auth root_login <<< "$parsed"; local pwd_status="${CLR_GREEN}允许${CLR_RESET}"
+[ "$pwd_auth" = "no" ] && pwd_status="${CLR_YELLOW}仅限密钥${CLR_RESET}"; local root_desc="${CLR_GREEN}允许${CLR_RESET}"
+[ "$root_login" = "no" ] && root_desc="${CLR_RED}禁止${CLR_RESET}"
 if [ "$root_login" = "prohibit-password" ] || [ "$root_login" = "without-password" ]; then
 root_desc="${CLR_YELLOW}仅限密钥${CLR_RESET}"
 fi
@@ -1456,20 +1463,28 @@ basename "$d"
 fi
 done
 }
-app_status(){ local name="$1"; app_valid_name "$name" || { echo "未安装"; return 0; }; local dir="/opt/vps-sh/apps/$name"
+app_status(){ local name="$1"; local snapshot="${2:-}"; app_valid_name "$name" || { echo "未安装"; return 0; }
+local dir="/opt/vps-sh/apps/$name"
 if [ ! -d "$dir" ] || { [ ! -f "$dir/compose.yaml" ] && [ ! -f "$dir/docker-compose.yml" ]; }; then
 echo "未安装"; return 0
 fi
-local running_cnt=$( (cd "$dir" && docker compose ps -q --status running 2>/dev/null | wc -l | tr -d ' ') )
-local total_cnt=$( (cd "$dir" && docker compose ps -q 2>/dev/null | wc -l | tr -d ' ') )
-if [ "$total_cnt" -eq 0 ]; then
-echo "已停止"; elif [ "$running_cnt" -eq "$total_cnt" ]; then echo "运行中"; elif [ "$running_cnt" -eq 0 ]; then
-local restarting_cnt=$( (cd "$dir" && docker compose ps -q --status restarting 2>/dev/null | wc -l | tr -d ' ') )
-if [ "$restarting_cnt" -gt 0 ]; then
-echo "启动异常"
+local states=""
+if [ -n "$snapshot" ]; then
+states=$(awk -F'|' -v p="$name" '($1==p || $2==p) && $3!="" {print $3}' <<< "$snapshot")
 else
-echo "已停止"
+states=$(docker ps -a --filter "label=com.docker.compose.project=$name" --format '{{.State}}' 2>/dev/null || true)
+[ -z "$states" ] && states=$(docker ps -a --filter "name=^/${name}$" --format '{{.State}}' 2>/dev/null || true)
 fi
+if [ -z "$states" ]; then
+echo "已停止"; return 0
+fi
+local total=0 running=0 restarting=0; local s
+for s in $states; do
+total=$((total + 1)); [ "$s" = "running" ] && running=$((running + 1)); [ "$s" = "restarting" ] && restarting=$((restarting + 1))
+done
+if [ "$total" -eq 0 ]; then
+echo "已停止"; elif [ "$running" -eq "$total" ]; then echo "运行中"; elif [ "$running" -eq 0 ]; then
+[ "$restarting" -gt 0 ] && echo "启动异常" || echo "已停止"
 else
 echo "部分运行"
 fi
@@ -1661,9 +1676,8 @@ local raw_tag=""; local tag_str=""
 if [ -n "$tag" ]; then
 raw_tag=" $tag"; tag_str=" ${CLR_DIM}${tag}${CLR_RESET}"
 fi
-local raw_text="  $num $name$raw_tag$raw_badge"; local m=$(printf "%s" "$raw_text" | wc -m | tr -d " ")
-local b=$(printf "%s" "$raw_text" | wc -c | tr -d " "); local w=$(( (m + b) / 2 )); local pad=0
-[ "$target" -gt "$w" ] && pad=$((target - w)); local padding=$(printf "%*s" "$pad" "")
+local raw_text="  $num $name$raw_tag$raw_badge"; local m=${#raw_text}; local b=$(printf "%s" "$raw_text" | wc -c)
+local w=$(( (m + b) / 2 )); local pad=0; [ "$target" -gt "$w" ] && pad=$((target - w)); local padding=$(printf "%*s" "$pad" "")
 printf "  ${CLR_CYAN}%s${CLR_RESET} %s%s%s%s" "$num" "$name" "$tag_str" "$col_badge" "$padding"
 }
 ui_app_install_single(){ local app="$1"; local meta=$(app_meta "$app" 2>/dev/null || true); local title="$app"; local default_port="8080"
@@ -1840,7 +1854,9 @@ done
 }
 ui_app_engine(){ local search_kw=""
 while true; do
-clear; app_cloud_fetch 2>/dev/null || true; local catalog=()
+clear; app_cloud_fetch 2>/dev/null || true; local docker_snapshot=""
+command -v docker >/dev/null 2>&1 && docker_snapshot=$(docker ps -a --format '{{.Label "com.docker.compose.project"}}|{{.Names}}|{{.State}}' 2>/dev/null || true)
+local catalog=()
 for c in $(app_cloud_list); do
 catalog+=("$c")
 done
@@ -1889,11 +1905,11 @@ printf -- "${CLR_BOLD}--- 应用市场 (%d 款) ---${CLR_RESET}\n\n" "$total"
 fi
 local i=0
 while [ $i -lt $total ]; do
-local idx1=$((i + 1)); local name1="${display_items[$i]}"; local st1=$(app_status "$name1")
+local idx1=$((i + 1)); local name1="${display_items[$i]}"; local st1=$(app_status "$name1" "$docker_snapshot")
 local meta1=$(app_meta "$name1" 2>/dev/null || true); local tag1=""; [ -n "$meta1" ] && tag1=$(echo "$meta1" | cut -d'|' -f3)
 local c1=$(app_render_col "$idx1" "$name1" "$st1" "$tag1" 39); local c2=""; local next=$((i + 1))
 if [ $next -lt $total ]; then
-local idx2=$((next + 1)); local name2="${display_items[$next]}"; local st2=$(app_status "$name2")
+local idx2=$((next + 1)); local name2="${display_items[$next]}"; local st2=$(app_status "$name2" "$docker_snapshot")
 local meta2=$(app_meta "$name2" 2>/dev/null || true); local tag2=""; [ -n "$meta2" ] && tag2=$(echo "$meta2" | cut -d'|' -f3)
 c2=$(app_render_col "$idx2" "$name2" "$st2" "$tag2" 0)
 fi
@@ -1911,7 +1927,7 @@ search_kw=""; continue
 fi
 [ -z "$choice" ] && continue
 if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$total" ]; then
-local selected="${display_items[$((choice - 1))]}"; local st=$(app_status "$selected")
+local selected="${display_items[$((choice - 1))]}"; local st=$(app_status "$selected" "$docker_snapshot")
 if [ "$st" = "未安装" ]; then
 ui_app_install_single "$selected"
 else
