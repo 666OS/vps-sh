@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="b9f15be"; VPS_BUILD_TIME="2026-11-04 15:59"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="aee7c22"; VPS_BUILD_TIME="2026-11-04 16:07"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -1976,11 +1976,13 @@ printf "${CLR_DIM}[c] 清除搜索    [0] 返回${CLR_RESET}\n\n"
 else
 printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"
 fi
-read -r -p "选择序号或搜索: " choice; [ "$choice" = "0" ] && return 0
+read -r -p "选择序号或搜索: " choice
+if [ -z "$choice" ] || [ "$choice" = "0" ]; then
+return 0
+fi
 if [ "$choice" = "c" ] || [ "$choice" = "C" ]; then
 search_kw=""; continue
 fi
-[ -z "$choice" ] && continue
 if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$total" ]; then
 local selected="${display_items[$((choice - 1))]}"; local st=$(app_status "$selected" "$docker_snapshot")
 if [ "$st" = "未安装" ]; then
