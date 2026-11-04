@@ -66,6 +66,7 @@ All commands are non-interactive, idempotent, and exit with status 0 on success.
 - `vs app_start <id>`: Start application container.
 - `vs app_logs <id>`: View live logs of application.
 - `vs app_uninstall <id> [purge_data:0|1]`: Down container and optionally purge data directory (`/opt/vps-sh/apps/<id>`).
+- Application Catalog Index: https://raw.githubusercontent.com/666OS/vps-apps/main/llms.txt
 
 ## Safety Assertions & Guardrails
 - **SSH Lockout Immunity**: SSH port is guarded in hardware logic; `fw_close` explicitly rejects closing SSH port.
