@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="e1e36d4"; VPS_BUILD_TIME="2026-11-04 10:52"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="f3c17a6"; VPS_BUILD_TIME="2026-11-04 11:03"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -1687,16 +1687,16 @@ fi
 local target_dir="/opt/vps-sh/apps/$name"
 while true; do
 clear; local st=$(app_status "$name"); local port=$(app_get_port "$name"); local host=$(app_get_host "$name")
-local net_desc="${host} (公网)"; [ "$host" = "127.0.0.1" ] && net_desc="${host} (内网反代)"; local st_clr="$CLR_DIM"
+local net_desc="${host} (公网直接访问) · 防火墙已放行"; [ "$host" = "127.0.0.1" ] && net_desc="${host} (本地反代模式) · 不向外网暴露"; local st_clr="$CLR_DIM"
 [ "$st" = "运行中" ] && st_clr="$CLR_GREEN"; [ "$st" = "部分运行" ] && st_clr="$CLR_YELLOW"; [ "$st" = "启动异常" ] && st_clr="$CLR_RED"
 [ "$st" = "已停止" ] && st_clr="$CLR_RED"; printf -- "${CLR_BOLD}--- 应用详情 ---${CLR_RESET}\n\n"
 printf "  ${CLR_DIM}应用:${CLR_RESET} %s\n" "$name"; printf "  ${CLR_DIM}状态:${CLR_RESET} %b%s%b\n" "$st_clr" "$st" "$CLR_RESET"
-printf "  ${CLR_DIM}端口:${CLR_RESET} %s\n" "$port"; printf "  ${CLR_DIM}网络:${CLR_RESET} %s\n" "$net_desc"
+printf "  ${CLR_DIM}端口:${CLR_RESET} %s\n" "$port"; printf "  ${CLR_DIM}网络:${CLR_RESET} %b\n" "$net_desc"
 printf "  ${CLR_DIM}数据:${CLR_RESET} %s/data\n" "$target_dir"; printf "  ${CLR_DIM}说明:${CLR_RESET} %s\n\n" "$desc"
 local act_toggle="[2] 停止"; [ "$st" = "已停止" ] && act_toggle="[2] 启动"
 printf "${CLR_CYAN}[1]${CLR_RESET} 重启    ${CLR_CYAN}%s${CLR_RESET}    ${CLR_CYAN}[3]${CLR_RESET} 日志\n" "$act_toggle"
 printf "${CLR_CYAN}[4]${CLR_RESET} 更新    ${CLR_CYAN}[5]${CLR_RESET} 卸载    ${CLR_CYAN}[6]${CLR_RESET} 编辑配置\n\n"
-printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"; read -r -p "请选择: " choice
+printf "${CLR_CYAN}[p]${CLR_RESET} 修改端口    ${CLR_CYAN}[h]${CLR_RESET} 切换网络    ${CLR_DIM}[0] 返回${CLR_RESET}\n\n"; read -r -p "请选择: " choice
 case "$choice" in
 1)
 app_restart "$name"; read -r -p "按回车返回..."; ;;
@@ -1727,6 +1727,38 @@ if [[ "$reload_cf" =~ ^[yY] ]]; then
 printf "${CLR_GREEN}已重新编排生效${CLR_RESET}\n"; read -r -p "按回车返回..."
 fi
 ;;
+p|P)
+read -r -p "请输入新映射端口 [$port]: " input_port
+if [ -n "$input_port" ] && [ "$input_port" != "$port" ]; then
+if [[ ! "$input_port" =~ ^[0-9]+$ ]] || [ "$input_port" -lt 1 ] || [ "$input_port" -gt 65535 ]; then
+printf "${CLR_RED}端口必须为 1-65535 之间的数字${CLR_RESET}\n"; sleep 1; elif app_port_in_use "$input_port"; then
+printf "${CLR_RED}错误: 端口 [%s] 已被占用${CLR_RESET}\n" "$input_port"; sleep 1
+else
+printf "正在更新端口至 %s...\n" "$input_port"; local env_file="$target_dir/.env"; local tmp_env=$(mktemp)
+[ -f "$env_file" ] && grep -v '^APP_PORT=' "$env_file" > "$tmp_env" 2>/dev/null || true; echo "APP_PORT=$input_port" >> "$tmp_env"
+mv -f "$tmp_env" "$env_file"; chmod 600 "$env_file"
+if [ "$host" = "0.0.0.0" ] && fw_is_initialized 2>/dev/null; then
+[ -n "$port" ] && [ "$port" != "-" ] && fw_close "$port" 2>/dev/null || true; fw_open "$input_port" 2>/dev/null || true
+fi
+(cd "$target_dir" && docker compose up -d)
+printf "${CLR_GREEN}端口已更新为 %s 并重载${CLR_RESET}\n" "$input_port"; read -r -p "按回车返回..."
+fi
+fi
+;;
+h|H)
+local new_host="127.0.0.1"; [ "$host" = "127.0.0.1" ] && new_host="0.0.0.0"; printf "正在切换网络模式至 %s...\n" "$new_host"
+local env_file="$target_dir/.env"; local tmp_env=$(mktemp)
+[ -f "$env_file" ] && grep -v '^APP_HOST=' "$env_file" > "$tmp_env" 2>/dev/null || true; echo "APP_HOST=$new_host" >> "$tmp_env"
+mv -f "$tmp_env" "$env_file"; chmod 600 "$env_file"
+if fw_is_initialized 2>/dev/null && [ -n "$port" ] && [ "$port" != "-" ]; then
+if [ "$new_host" = "0.0.0.0" ]; then
+fw_open "$port" 2>/dev/null || true
+else
+fw_close "$port" 2>/dev/null || true
+fi
+fi
+(cd "$target_dir" && docker compose up -d)
+printf "${CLR_GREEN}网络模式已切换至 %s 并生效${CLR_RESET}\n" "$new_host"; read -r -p "按回车返回..."; ;;
 0|*)
 return 0; ;;
 esac
