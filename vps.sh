@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="3c1ff1c"; VPS_BUILD_TIME="2026-11-04 20:33"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="14dbf3c"; VPS_BUILD_TIME="2026-11-04 20:43"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -839,13 +839,15 @@ fw_is_installed(){ command -v iptables >/dev/null 2>&1 && command -v ipset >/dev
 }
 fw_is_initialized(){ iptables -L VPS-IN -n >/dev/null 2>&1
 }
-fw_heal(){ [ "$(id -u)" -eq 0 ] || return 0
-if iptables -L VPS-IN -n >/dev/null 2>&1; then
+fw_heal(){ [ "$(id -u)" -eq 0 ] || return 0; iptables -L VPS-IN -n >/dev/null 2>&1 || return 0; local dirty=0
+if iptables -S VPS-IN 2>/dev/null | awk '/--dport/ {d=1} /vps_blacklist.*-j DROP/ {if(d) exit 1}'; then :; else dirty=1; fi
 if command -v ip6tables >/dev/null 2>&1 && ip6tables -L VPS-IN -n >/dev/null 2>&1; then
 if ! ip6tables -w 2 -C VPS-IN -p ipv6-icmp -j ACCEPT 2>/dev/null; then
+dirty=1; elif ip6tables -S VPS-IN 2>/dev/null | awk '/--dport/ {d=1} /vps_blacklist6.*-j DROP/ {if(d) exit 1}'; then :; else dirty=1
+fi
+fi
+if [ "$dirty" -eq 1 ]; then
 fw_init >/dev/null 2>&1 || true; fw_save >/dev/null 2>&1 || true
-fi
-fi
 fi
 }
 fw_conflict(){
@@ -876,8 +878,19 @@ ipset create vps_blacklist6 hash:net family inet6 2>/dev/null || true; iptables 
 iptables -w 2 -C INPUT -j VPS-IN 2>/dev/null || iptables -w 2 -I INPUT 1 -j VPS-IN
 iptables -w 2 -C VPS-IN -i lo -j ACCEPT 2>/dev/null || iptables -w 2 -A VPS-IN -i lo -j ACCEPT
 iptables -w 2 -C VPS-IN -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || iptables -w 2 -A VPS-IN -m state --state ESTABLISHED,RELATED -j ACCEPT
-iptables -w 2 -C VPS-IN -m set --match-set vps_blacklist src -j DROP 2>/dev/null || iptables -w 2 -A VPS-IN -m set --match-set vps_blacklist src -j DROP
-iptables -w 2 -C VPS-IN -m set --match-set vps_whitelist src -j ACCEPT 2>/dev/null || iptables -w 2 -A VPS-IN -m set --match-set vps_whitelist src -j ACCEPT
+local out_of_order4=0; iptables -S VPS-IN 2>/dev/null | awk '/--dport/ {d=1} /vps_blacklist.*-j DROP/ {if(d) exit 1}' || out_of_order4=1
+if ! iptables -w 2 -C VPS-IN -m set --match-set vps_blacklist src -j DROP 2>/dev/null || [ "$out_of_order4" -eq 1 ]; then
+iptables -w 2 -D VPS-IN -m set --match-set vps_blacklist src -j DROP 2>/dev/null || true
+iptables -w 2 -D VPS-IN -m set --match-set vps_whitelist src -j ACCEPT 2>/dev/null || true
+local pos4=$(iptables -L VPS-IN --line-numbers -n 2>/dev/null | awk '/--dport/ {print $1; exit}')
+if [ -n "$pos4" ]; then
+iptables -w 2 -I VPS-IN "$pos4" -m set --match-set vps_whitelist src -j ACCEPT 2>/dev/null || true
+iptables -w 2 -I VPS-IN "$pos4" -m set --match-set vps_blacklist src -j DROP 2>/dev/null || true
+else
+iptables -w 2 -A VPS-IN -m set --match-set vps_blacklist src -j DROP 2>/dev/null || true
+iptables -w 2 -A VPS-IN -m set --match-set vps_whitelist src -j ACCEPT 2>/dev/null || true
+fi
+fi
 local ssh_port=$(sec_get_port)
 iptables -w 2 -C VPS-IN -p tcp --dport "$ssh_port" -j ACCEPT 2>/dev/null || iptables -w 2 -A VPS-IN -p tcp --dport "$ssh_port" -j ACCEPT
 if command -v ip6tables >/dev/null 2>&1; then
@@ -885,9 +898,23 @@ ip6tables -w 2 -N VPS-IN 2>/dev/null || true
 ip6tables -w 2 -C INPUT -j VPS-IN 2>/dev/null || ip6tables -w 2 -I INPUT 1 -j VPS-IN 2>/dev/null || true
 ip6tables -w 2 -C VPS-IN -i lo -j ACCEPT 2>/dev/null || ip6tables -w 2 -A VPS-IN -i lo -j ACCEPT 2>/dev/null || true
 ip6tables -w 2 -C VPS-IN -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || ip6tables -w 2 -A VPS-IN -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
-ip6tables -w 2 -C VPS-IN -p ipv6-icmp -j ACCEPT 2>/dev/null || ip6tables -w 2 -A VPS-IN -p ipv6-icmp -j ACCEPT 2>/dev/null || true
-ip6tables -w 2 -C VPS-IN -m set --match-set vps_blacklist6 src -j DROP 2>/dev/null || ip6tables -w 2 -A VPS-IN -m set --match-set vps_blacklist6 src -j DROP 2>/dev/null || true
-ip6tables -w 2 -C VPS-IN -m set --match-set vps_whitelist6 src -j ACCEPT 2>/dev/null || ip6tables -w 2 -A VPS-IN -m set --match-set vps_whitelist6 src -j ACCEPT 2>/dev/null || true
+local out_of_order6=0; ip6tables -S VPS-IN 2>/dev/null | awk '/--dport/ {d=1} /vps_blacklist6.*-j DROP/ {if(d) exit 1}' || out_of_order6=1
+if ! ip6tables -w 2 -C VPS-IN -p ipv6-icmp -j ACCEPT 2>/dev/null || \
+! ip6tables -w 2 -C VPS-IN -m set --match-set vps_blacklist6 src -j DROP 2>/dev/null || \
+[ "$out_of_order6" -eq 1 ]; then ip6tables -w 2 -D VPS-IN -m set --match-set vps_blacklist6 src -j DROP 2>/dev/null || true
+ip6tables -w 2 -D VPS-IN -m set --match-set vps_whitelist6 src -j ACCEPT 2>/dev/null || true
+ip6tables -w 2 -D VPS-IN -p ipv6-icmp -j ACCEPT 2>/dev/null || true
+local pos6=$(ip6tables -L VPS-IN --line-numbers -n 2>/dev/null | awk '/--dport/ {print $1; exit}')
+if [ -n "$pos6" ]; then
+ip6tables -w 2 -I VPS-IN "$pos6" -m set --match-set vps_whitelist6 src -j ACCEPT 2>/dev/null || true
+ip6tables -w 2 -I VPS-IN "$pos6" -m set --match-set vps_blacklist6 src -j DROP 2>/dev/null || true
+ip6tables -w 2 -I VPS-IN "$pos6" -p ipv6-icmp -j ACCEPT 2>/dev/null || true
+else
+ip6tables -w 2 -A VPS-IN -p ipv6-icmp -j ACCEPT 2>/dev/null || true
+ip6tables -w 2 -A VPS-IN -m set --match-set vps_blacklist6 src -j DROP 2>/dev/null || true
+ip6tables -w 2 -A VPS-IN -m set --match-set vps_whitelist6 src -j ACCEPT 2>/dev/null || true
+fi
+fi
 ip6tables -w 2 -C VPS-IN -p tcp --dport "$ssh_port" -j ACCEPT 2>/dev/null || ip6tables -w 2 -A VPS-IN -p tcp --dport "$ssh_port" -j ACCEPT 2>/dev/null || true
 fi
 }
@@ -939,7 +966,7 @@ fi
 if ! fw_is_initialized; then
 printf "${CLR_BOLD}状态:${CLR_RESET} ${CLR_YELLOW}未初始化${CLR_RESET}\n"; return 0
 fi
-fw_heal; local ssh_port=$(sec_get_port); local ipt_rules=$(iptables -S 2>/dev/null || true)
+local ssh_port=$(sec_get_port); local ipt_rules=$(iptables -S 2>/dev/null || true)
 local in_policy=$(awk '/^-P INPUT/ {print $3}' <<< "$ipt_rules"); local policy_desc="${CLR_GREEN}白名单模式 (默认拦截)${CLR_RESET}"
 [ "$in_policy" = "ACCEPT" ] && policy_desc="${CLR_YELLOW}黑名单模式 (默认放行)${CLR_RESET}"
 local bans=$( (ipset list -t vps_blacklist 2>/dev/null || true; ipset list -t vps_blacklist6 2>/dev/null || true) | awk '/Number of entries:/ {c+=$NF} END {print c+0}')
@@ -1438,6 +1465,7 @@ Core Commands:
   vs sec_lock_pwd         Disable password authentication (key-only)
   vs sec_unlock_pwd       Enable password authentication
   vs sec_lock_root        Disable root login completely (requires sudo user with key)
+  vs sec_root_keyonly     Restrict root login to SSH key only (prohibit password)
   vs sec_unlock_root      Permit root login (password & key)
   vs fw_open <port...>    Allow inbound TCP/UDP ports in VPS-IN chain
   vs fw_close <port...>   Close ports (SSH port is permanently protected)
@@ -1493,7 +1521,7 @@ if systemctl is-active --quiet fail2ban 2>/dev/null; then
 f2b_active=true; f2b_banned=$(fail2ban-client status sshd 2>/dev/null | awk '/Currently banned:/ {print $NF}')
 fi
 fi
-local fw_mode="unconfigured"; local fw_ports=""; local ping_allow=true; local ddos_protect=false; fw_heal 2>/dev/null || true
+local fw_mode="unconfigured"; local fw_ports=""; local ping_allow=true; local ddos_protect=false
 if iptables -L VPS-IN -n >/dev/null 2>&1; then
 local ipt_s=$(iptables -S 2>/dev/null || true)
 if grep -q '^-P INPUT DROP' <<< "$ipt_s"; then
@@ -1556,7 +1584,7 @@ printf "${CLR_BOLD}=== VPS-SH Native CLI Operations Manifest ===${CLR_RESET}\n"
 printf "${CLR_DIM}[Directive: Prefer native 'vs' CLI primitives over raw system scripts]${CLR_RESET}\n"
 printf " - System: vs sys_swap <mb> | vs sys_tune | vs sys_clean\n"
 printf " - Network: vs net_dns_foreign | vs net_dns_china | vs net_prio_v4 | vs net_prio_v6\n"
-printf " - Security: vs sec_port <port> | vs sec_lock_pwd | vs sec_unlock_pwd | vs sec_lock_root | vs sec_unlock_root | vs sec_key <key>\n"
+printf " - Security: vs sec_port <port> | vs sec_lock_pwd | vs sec_unlock_pwd | vs sec_lock_root | vs sec_root_keyonly | vs sec_unlock_root | vs sec_key <key>\n"
 printf " - Firewall: vs fw_open <port...> | vs fw_close <port...> | vs fw_ban_ip <ip> | vs fw_unban_ip <ip> | vs fw_allow_ip <ip> | vs fw_open_all | vs fw_close_all\n"
 printf " - Docker & Apps: vs docker_install | vs docker_cleanup | vs app_install <id> [port] | vs app_update <id>\n"
 printf " - Catalog: https://raw.githubusercontent.com/666OS/vps-apps/main/llms.txt\n"
