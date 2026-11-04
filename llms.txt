@@ -1,0 +1,73 @@
+# VPS-SH (Linux Host Management & Docker Application Engine)
+
+> Single-file Linux operations console and Docker lifecycle management engine for Debian 12+ and Ubuntu 22.04+.
+> Native bash execution, zero background daemon, deterministic non-interactive CLI primitives.
+
+## Quick Installation & Direct Run
+
+```bash
+# Execute remotely or bootstrap installation (registers 'vs' command):
+curl -fsSL https://raw.githubusercontent.com/666OS/vps-sh/main/vps.sh | bash
+```
+
+## AI Agent Integration & Machine Snapshot
+
+- `vs ai`: Generates a high-density, token-optimized system diagnosis snapshot and command manifest (~250 tokens).
+- `vs ai --json`: Outputs minified, single-line JSON of the live system state (OS, CPU, memory, swap, disk, outbound IP, SSH, firewall policy, open ports, fail2ban, Docker status).
+
+## CLI Operations Manual (Deterministic Primitives)
+
+All commands are non-interactive, idempotent, and exit with status 0 on success.
+
+### 1. System Operations (`sys_*`)
+- `vs sys_swap <mb>`: Create or resize swap memory (e.g. `vs sys_swap 2048`).
+- `vs sys_swap_off`: Disable and delete swap file.
+- `vs sys_tune`: Enable BBR congestion control and kernel network/file performance tuning.
+- `vs sys_clean`: Flush system package caches and journal logs.
+- `vs sys_update`: Upgrade system packages non-interactively.
+- `vs sys_tz <timezone>`: Set system timezone (default: `Asia/Shanghai`).
+
+### 2. Network Diagnostics (`net_*`)
+- `vs net_dns_foreign`: Configure foreign public DNS (Cloudflare / Google 1.1.1.1, 8.8.8.8).
+- `vs net_dns_china`: Configure domestic public DNS (Aliyun / DNSPod 223.5.5.5, 119.29.29.29).
+- `vs net_prio_v4`: Prioritize IPv4 for outbound traffic.
+- `vs net_prio_v6`: Prioritize IPv6 for outbound traffic.
+- `vs net_test`: Run return routing diagnostic to major telecom networks.
+
+### 3. Security & SSH Hardening (`sec_*`)
+- `vs sec_port <port>`: Change SSH port, test configuration with `sshd -t` before reload, and auto-sync firewall.
+- `vs sec_lock_pwd`: Disable password authentication (SSH key-only).
+- `vs sec_unlock_pwd`: Enable password authentication.
+- `vs sec_lock_root`: Prohibit root password login.
+- `vs sec_unlock_root`: Permit root password login.
+
+### 4. Native Firewall Management (`fw_*`)
+- `vs fw_open <port...>`: Allow inbound TCP/UDP ports through `VPS-IN` chain (e.g. `vs fw_open 80 443`).
+- `vs fw_close <port...>`: Close previously opened ports (SSH protection port is permanently guarded).
+- `vs fw_open_all`: Switch to Blacklist Mode (`INPUT ACCEPT`, default pass).
+- `vs fw_close_all`: Switch to Whitelist Mode (`INPUT DROP`, default block, high security).
+- `vs fw_ban_ip <ip...>`: Add IP or CIDR to `vps_blacklist` ipset.
+- `vs fw_allow_ip <ip...>`: Add IP or CIDR to `vps_whitelist` ipset.
+- `vs fw_unban_ip <ip...>`: Remove IP or CIDR from firewall sets.
+- `vs fw_ping [on|off|toggle]`: Enable or disable ICMP echo replies.
+- `vs fw_ddos [on|off|toggle]`: Enable SYN/UDP rate limiting against DDoS.
+- `vs fw_reset`: Safely reset firewall rules to baseline without dropping active SSH session.
+
+### 5. Docker & Container Lifecycle (`docker_*`)
+- `vs docker_install`: Install Docker Engine and Docker Compose plugin.
+- `vs docker_cleanup`: Prune stopped containers, dangling images, and build caches.
+- `vs docker_mirror_fast`: Apply verified domestic/fast Docker registry mirrors.
+
+### 6. Application Market (`app_*`)
+- `vs app_install <id> [port]`: Deploy application from market template (e.g. `vs app_install nginx-pm 81`).
+- `vs app_update <id>`: Pull latest image and recreate application container.
+- `vs app_restart <id>`: Restart application container.
+- `vs app_stop <id>`: Stop application container.
+- `vs app_start <id>`: Start application container.
+- `vs app_logs <id>`: View live logs of application.
+- `vs app_uninstall <id> [purge_data:0|1]`: Down container and optionally purge data directory (`/opt/vps-sh/apps/<id>`).
+
+## Safety Assertions & Guardrails
+- **SSH Lockout Immunity**: SSH port is guarded in hardware logic; `fw_close` explicitly rejects closing SSH port.
+- **Fail-Safe Rollback**: `sec_ssh_apply` validates config syntax with `sshd -t` before restarting daemon; auto-reverts on failure.
+- **Non-blocking Execution**: CLI subcommands never call interactive `read` prompts; invalid arguments immediately fail fast.
