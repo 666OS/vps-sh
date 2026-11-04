@@ -71,3 +71,4 @@ All commands are non-interactive, idempotent, and exit with status 0 on success.
 - **SSH Lockout Immunity**: SSH port is guarded in hardware logic; `fw_close` explicitly rejects closing SSH port.
 - **Fail-Safe Rollback**: `sec_ssh_apply` validates config syntax with `sshd -t` before restarting daemon; auto-reverts on failure.
 - **Non-blocking Execution**: CLI subcommands never call interactive `read` prompts; invalid arguments immediately fail fast.
+
