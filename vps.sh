@@ -12,7 +12,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="7ce04e6"; VPS_BUILD_TIME="2026-11-04 18:40"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="c46ed5b"; VPS_BUILD_TIME="2026-11-04 19:30"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -1947,16 +1947,16 @@ clear; local mode_desc="${CLR_GREEN}公网直接访问 (0.0.0.0)${CLR_RESET} · 
 printf "  ${CLR_DIM}端口:${CLR_RESET} %s\n" "$port"; printf "  ${CLR_DIM}网络:${CLR_RESET} %b\n" "$mode_desc"
 [ -n "$auth" ] && printf "  ${CLR_DIM}初始凭据:${CLR_RESET} %s\n" "$auth"; printf "  ${CLR_DIM}路径:${CLR_RESET} %s\n\n" "$target_dir"
 if [ "$port" != "-" ]; then
-printf "${CLR_CYAN}[Enter]${CLR_RESET} 立即部署    "; printf "${CLR_CYAN}[p]${CLR_RESET} 修改端口    "
-printf "${CLR_CYAN}[h]${CLR_RESET} 切换网络    "; printf "${CLR_DIM}[0] 取消${CLR_RESET}\n\n"
+printf "${CLR_CYAN}[1]${CLR_RESET} 立即部署    "; printf "${CLR_CYAN}[p]${CLR_RESET} 修改端口    "; printf "${CLR_CYAN}[h]${CLR_RESET} 切换网络    "
+printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"
 else
-printf "${CLR_CYAN}[Enter]${CLR_RESET} 立即部署    "; printf "${CLR_DIM}[0] 取消${CLR_RESET}\n\n"
+printf "${CLR_CYAN}[1]${CLR_RESET} 立即部署    "; printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"
 fi
 read -r -p "请选择: " choice
 case "$choice" in
-""|[yY]|[yY][eE][sS]|1)
+1|[yY]|[yY][eE][sS])
 if [ -n "$port" ] && [ "$port" != "-" ] && app_port_in_use "$port"; then
-printf "\n${CLR_RED}错误: 端口 [%s] 已被占用，请按 [p] 修改端口${CLR_RESET}\n" "$port"; read -r -p "按回车继续..."; continue
+printf "\n${CLR_RED}错误: 端口 [%s] 已被占用，请按 [p] 修改端口${CLR_RESET}\n" "$port"; read -r -p "按回车返回..."; continue
 fi
 echo; printf "正在拉取并编排 %s...\n\n" "$title"
 if app_install "$app" "$port" "$host"; then
@@ -1982,7 +1982,7 @@ printf "\n${CLR_RED}部署失败，请检查 Docker 日志${CLR_RESET}\n"
 fi
 echo; read -r -p "按回车返回..."; return 0; ;;
 p|P)
-[ "$port" = "-" ] && continue; read -r -p "请输入映射端口 [$port]: " input_port
+[ "$port" = "-" ] && continue; read -r -p "请输入映射端口 [$port] (回车取消): " input_port
 if [ -n "$input_port" ]; then
 if [[ ! "$input_port" =~ ^[0-9]+$ ]] || [ "$input_port" -lt 1 ] || [ "$input_port" -gt 65535 ]; then
 printf "${CLR_RED}端口必须为 1-65535 之间的数字${CLR_RESET}\n"; sleep 1
@@ -1999,8 +1999,10 @@ else
 host="0.0.0.0"
 fi
 ;;
-0|q|Q)
+0|q|Q|"")
 return 0; ;;
+*)
+;;
 esac
 done
 }
