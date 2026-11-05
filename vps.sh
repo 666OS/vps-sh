@@ -12,13 +12,16 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="169b1b1"; VPS_BUILD_TIME="2026-11-04 22:53:57"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="081ea71"; VPS_BUILD_TIME="2026-11-05 14:29:53"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
 [ -f /etc/vps-sh/feed ] && VPS_APP_FEED="$(head -n 1 /etc/vps-sh/feed | tr -d '\r\n ')"; VPS_CACHE_DIR="/run/vps-sh"
-mkdir -p -m 700 "$VPS_CACHE_DIR" 2>/dev/null || VPS_CACHE_DIR="/tmp"; json_str(){ local s="${1:-}"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
-s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"; s="${s//[$'\001'-$'\037']/}"; printf '"%s"' "$s"
+if ! mkdir -p -m 700 "$VPS_CACHE_DIR" 2>/dev/null || [ ! -O "$VPS_CACHE_DIR" ]; then
+VPS_CACHE_DIR=$(mktemp -d /tmp/.vps-cache.XXXXXX 2>/dev/null || echo "/tmp"); chmod 700 "$VPS_CACHE_DIR" 2>/dev/null || true
+fi
+json_str(){ local s="${1:-}"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
+s="${s//[$'\001'-$'\037']/}"; printf '"%s"' "$s"
 }
 json_num(){ [[ "${1:-}" =~ ^-?[0-9]+(\.[0-9]+)?$ ]] && printf '%s' "$1" || printf 'null'
 }
@@ -582,17 +585,16 @@ if ! command -v sudo >/dev/null 2>&1; then
 apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y sudo
 fi
 usermod -aG sudo "$u" 2>/dev/null || usermod -aG wheel "$u" 2>/dev/null || true; install -m 0440 /dev/null "/etc/sudoers.d/90-$u"
+if [ -n "$pwd" ]; then
+printf '%s\n' "$u ALL=(ALL:ALL) ALL" > "/etc/sudoers.d/90-$u"
+else
 printf '%s\n' "$u ALL=(ALL:ALL) NOPASSWD: ALL" > "/etc/sudoers.d/90-$u"
+fi
 if ! visudo -cf "/etc/sudoers.d/90-$u" >/dev/null 2>&1; then
 rm -f "/etc/sudoers.d/90-$u"; printf "${CLR_RED}错误: sudoers 语法校验失败${CLR_RESET}\n" >&2; return 1
 fi
-mkdir -p "/home/$u/.ssh"; chmod 700 "/home/$u/.ssh"
-if [ -s /root/.ssh/authorized_keys ]; then
-cp /root/.ssh/authorized_keys "/home/$u/.ssh/authorized_keys"
-else
-touch "/home/$u/.ssh/authorized_keys"
-fi
-chmod 600 "/home/$u/.ssh/authorized_keys"; chown -R "$u:$u" "/home/$u/.ssh"; printf "${CLR_GREEN}已创建 sudo 用户: %s${CLR_RESET}\n" "$u"
+mkdir -p "/home/$u/.ssh"; chmod 700 "/home/$u/.ssh"; touch "/home/$u/.ssh/authorized_keys"; chmod 600 "/home/$u/.ssh/authorized_keys"
+chown -R "$u:$u" "/home/$u/.ssh"; printf "${CLR_GREEN}已创建 sudo 用户: %s${CLR_RESET}\n" "$u"
 }
 sec_user_del(){ require_root; local u="$1"
 if [ -z "$u" ] || [ "$u" = "root" ]; then
@@ -895,7 +897,7 @@ fw_conf_load(){ FW_MODE="blacklist"; FW_PORTS=""; FW_PING="on"; FW_DDOS="off"; [
 while IFS='=' read -r k v; do
 v="${v%\"}"; v="${v#\"}"
 case "$k" in MODE) FW_MODE="$v" ;; PORTS) FW_PORTS="$v" ;; PING) FW_PING="$v" ;; DDOS) FW_DDOS="$v" ;; esac
-done < "$VPS_FW_CONF"
+done < <(tr -d '\r' < "$VPS_FW_CONF")
 return 0
 }
 fw_conf_save(){ mkdir -p /etc/vps-sh; local t="$VPS_FW_CONF.tmp"
@@ -1152,13 +1154,23 @@ printf "${CLR_GREEN}已切换为黑名单模式 (默认放行)${CLR_RESET}\n"
 fw_close_all(){ require_root; fw_ready || return 1; FW_MODE="whitelist"; fw_conf_save; fw_apply || return 1; fw_save
 printf "${CLR_GREEN}已切换为白名单模式 (默认拦截, 含 Docker 发布端口)${CLR_RESET}\n"
 }
+fw_valid_ip(){
+[[ "${1:-}" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(/[0-9]{1,2})?$ ]] || \
+[[ "${1:-}" =~ ^[0-9a-fA-F:]+(/[0-9]{1,3})?$ ]]
+}
 fw_ban_ip(){ require_root; fw_ready || return 1; fw_apply || return 1; local added=()
 for ip in "$@"; do
+if ! fw_valid_ip "$ip"; then
+printf "${CLR_RED}错误: IP/CIDR 格式无效 (%s)${CLR_RESET}\n" "$ip" >&2; continue
+fi
 local b_set="vps_blacklist"; local w_set="vps_whitelist"
 if [[ "$ip" =~ : ]]; then
 b_set="vps_blacklist6"; w_set="vps_whitelist6"
 fi
-ipset del "$w_set" "$ip" -exist 2>/dev/null || true; ipset add "$b_set" "$ip" -exist 2>/dev/null || true; added+=("$ip")
+ipset del "$w_set" "$ip" -exist 2>/dev/null || true
+if ipset add "$b_set" "$ip" -exist 2>/dev/null; then
+added+=("$ip")
+fi
 done
 fw_save
 if [ ${#added[@]} -gt 0 ]; then
@@ -1167,11 +1179,17 @@ fi
 }
 fw_allow_ip(){ require_root; fw_ready || return 1; fw_apply || return 1; local added=()
 for ip in "$@"; do
+if ! fw_valid_ip "$ip"; then
+printf "${CLR_RED}错误: IP/CIDR 格式无效 (%s)${CLR_RESET}\n" "$ip" >&2; continue
+fi
 local b_set="vps_blacklist"; local w_set="vps_whitelist"
 if [[ "$ip" =~ : ]]; then
 b_set="vps_blacklist6"; w_set="vps_whitelist6"
 fi
-ipset del "$b_set" "$ip" -exist 2>/dev/null || true; ipset add "$w_set" "$ip" -exist 2>/dev/null || true; added+=("$ip")
+ipset del "$b_set" "$ip" -exist 2>/dev/null || true
+if ipset add "$w_set" "$ip" -exist 2>/dev/null; then
+added+=("$ip")
+fi
 done
 fw_save
 if [ ${#added[@]} -gt 0 ]; then
@@ -1180,15 +1198,21 @@ fi
 }
 fw_unban_ip(){ require_root; fw_ready || return 1; fw_apply || return 1; local removed=()
 for ip in "$@"; do
+if ! fw_valid_ip "$ip"; then
+printf "${CLR_RED}错误: IP/CIDR 格式无效 (%s)${CLR_RESET}\n" "$ip" >&2; continue
+fi
 local b_set="vps_blacklist"; local w_set="vps_whitelist"
 if [[ "$ip" =~ : ]]; then
 b_set="vps_blacklist6"; w_set="vps_whitelist6"
 fi
-ipset del "$b_set" "$ip" -exist 2>/dev/null || true; ipset del "$w_set" "$ip" -exist 2>/dev/null || true; removed+=("$ip")
+local hit=0; ipset del "$b_set" "$ip" 2>/dev/null && hit=1 || true; ipset del "$w_set" "$ip" 2>/dev/null && hit=1 || true
+[ "$hit" -eq 1 ] && removed+=("$ip")
 done
 fw_save
 if [ ${#removed[@]} -gt 0 ]; then
 printf "${CLR_GREEN}已移除限制: %s${CLR_RESET}\n" "${removed[*]}"
+else
+printf "${CLR_YELLOW}未找到指定 IP 限制${CLR_RESET}\n"
 fi
 }
 fw_ping(){ require_root; fw_ready || return 1; local state="${1:-toggle}"
@@ -1305,7 +1329,7 @@ printf "%s\n" "$raw" | awk 'NR>1 {
         for(i=1;i<n;i++) { ip = (ip=="" ? a[i] : ip ":" a[i]) }
         if(ip=="") ip="*"
         scope="公网"
-        if(ip ~ /^(127\.|::1$)/) scope="本地"
+        if(ip ~ /^(127\.|::1$|\[::1\])/) scope="本地"
         proc=$7
         pname="-"
         if(match(proc, /"([^"]+)"/)) {
@@ -1769,6 +1793,15 @@ mv "$tmp" /etc/docker/daemon.json
 else
 rm -f "$tmp"
 fi
+elif command -v python3 >/dev/null 2>&1; then
+python3 -c 'import json, sys
+f = "/etc/docker/daemon.json"
+try:
+    with open(f, "r") as fp: d = json.load(fp)
+except Exception: d = {}
+d["registry-mirrors"] = sys.argv[1:]
+with open(f, "w") as fp: json.dump(d, fp, indent=2)
+' "${mirrors[@]}" 2>/dev/null || true
 else
         cat > /etc/docker/daemon.json << EOF
 {
@@ -1803,6 +1836,18 @@ else
 rm -f "$tmp"
 fi
 [ "$(tr -d ' \n\t{}' < /etc/docker/daemon.json 2>/dev/null)" = "" ] && rm -f /etc/docker/daemon.json
+elif command -v python3 >/dev/null 2>&1; then
+python3 -c 'import json, os
+f = "/etc/docker/daemon.json"
+try:
+    with open(f, "r") as fp: d = json.load(fp)
+    d.pop("registry-mirrors", None)
+    if d:
+        with open(f, "w") as fp: json.dump(d, fp, indent=2)
+    else:
+        os.remove(f)
+except Exception: pass
+' 2>/dev/null || true
 else
 rm -f /etc/docker/daemon.json
 fi
