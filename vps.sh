@@ -18,7 +18,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="85ed76a"; VPS_BUILD_TIME="2026-11-10 13:44:27"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="9e4724b"; VPS_BUILD_TIME="2026-11-10 14:48:02"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -423,6 +423,14 @@ sec_get_pwd(){ local a=$(sshd -T 2>/dev/null | awk '/^passwordauthentication / {
 }
 sec_get_root_login(){ local s=$(sshd -T 2>/dev/null | awk '/^permitrootlogin / {print $2; exit}'); echo "${s:-prohibit-password}"
 }
+sec_get_pubkey(){ local u="${1:-}" out=""
+if [ -n "$u" ]; then
+out=$(sshd -T -C "user=$u,host=unknown,addr=0.0.0.0" 2>/dev/null || sshd -T 2>/dev/null || true)
+else
+out=$(sshd -T 2>/dev/null || true)
+fi
+local k=$(awk '/^pubkeyauthentication / {print tolower($2); exit}' <<< "$out"); echo "${k:-yes}"
+}
 _sec_restore_file(){ local f="$1" had="$2" data="$3"
 if [ "$had" -eq 1 ]; then
 if [ -n "$data" ]; then
@@ -610,12 +618,12 @@ awk '
         ' "$ak" 2>/dev/null
 return $?
 fi
-if [ "$(sec_get_root_login 2>/dev/null || echo "yes")" != "no" ] && _sec_user_loginable root && sec_has_keys root; then
+if [ "$(sec_get_root_login 2>/dev/null || echo "yes")" != "no" ] && _sec_user_loginable root && sec_has_keys root && [ "$(sec_get_pubkey root 2>/dev/null || echo "yes")" != "no" ]; then
 return 0
 fi
 local u
 for u in $(sec_list_sudoers); do
-if _sec_user_loginable "$u" && sec_has_keys "$u"; then
+if _sec_user_loginable "$u" && sec_has_keys "$u" && [ "$(sec_get_pubkey "$u" 2>/dev/null || echo "yes")" != "no" ]; then
 return 0
 fi
 done
@@ -700,7 +708,7 @@ done
 }
 sec_lock_pwd(){ require_root
 if ! sec_has_keys; then
-printf "${CLR_RED}错误: 当前可登录账户未配置有效 SSH 公钥，禁止禁用密码${CLR_RESET}\n" >&2; return 1
+printf "${CLR_RED}错误: 当前可登录账户未配置有效 SSH 公钥或 PubkeyAuthentication 已关闭，禁止禁用密码${CLR_RESET}\n" >&2; return 1
 fi
 sec_ssh_apply "$(sec_get_port)" "no" "$(sec_get_root_login)"
 }
@@ -720,7 +728,7 @@ fi
 if [ "$(sec_get_pwd)" = "no" ]; then
 local has_user_key=0
 for u in $sudoers; do
-if _sec_user_loginable "$u" && sec_has_keys "$u"; then
+if _sec_user_loginable "$u" && sec_has_keys "$u" && [ "$(sec_get_pubkey "$u" 2>/dev/null || echo "yes")" != "no" ]; then
 has_user_key=1; break
 fi
 done
@@ -1872,14 +1880,17 @@ if [ -n "$sudoers" ]; then
 local suser
 for suser in $sudoers; do
 if sec_has_keys "$suser" 2>/dev/null; then
-sudo_key=true; _sec_user_loginable "$suser" && sudo_login_key=true || true
+sudo_key=true
+if [ "$sudo_login_key" = "false" ] && _sec_user_loginable "$suser" && [ "$(sec_get_pubkey "$suser" 2>/dev/null || echo "yes")" != "no" ]; then
+sudo_login_key=true
+fi
 fi
 done
 fi
 if [ "$root_key" = "true" ] || [ "$sudo_key" = "true" ]; then
 has_keys=true
 fi
-if { [ "$root_login" != "no" ] && [ "$root_key" = "true" ] && [ "$root_loginable" = "true" ]; } || [ "$sudo_login_key" = "true" ]; then
+if { [ "$root_login" != "no" ] && [ "$root_key" = "true" ] && [ "$root_loginable" = "true" ] && [ "$(sec_get_pubkey root 2>/dev/null || echo "yes")" != "no" ]; } || [ "$sudo_login_key" = "true" ]; then
 key_login_ready=true
 fi
 local f2b_installed=false f2b_active=false f2b_banned=0
