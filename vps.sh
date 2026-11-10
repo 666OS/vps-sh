@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-set -euo pipefail; [ "$(uname -s)" = "Linux" ] || { echo "仅支持 Linux 系统" >&2; exit 1; }
+set -euo pipefail
+case ":$PATH:" in *:/usr/sbin:*) ;; *) PATH="/usr/sbin:$PATH" ;; esac
+case ":$PATH:" in *:/sbin:*) ;; *) PATH="/sbin:$PATH" ;; esac
+export PATH
+if [ "${VS_LIB_ONLY:-0}" != "1" ]; then
+[ "$(uname -s)" = "Linux" ] || { echo "仅支持 Linux 系统" >&2; exit 1; }
 if [ "$(id -u)" -ne 0 ]; then
 if [ -f "$0" ] && command -v sudo >/dev/null 2>&1; then
 exec sudo -E bash "$0" "$@"
@@ -7,18 +12,24 @@ else
 echo "错误: 请使用 root 权限或 sudo 运行此脚本" >&2; exit 1
 fi
 fi
+fi
 require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1; }
 }
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="b5eb583"; VPS_BUILD_TIME="2026-11-10 12:00:15"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="b92ff68"; VPS_BUILD_TIME="2026-11-10 12:17:17"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
-[ -f /etc/vps-sh/feed ] && VPS_APP_FEED="$(head -n 1 /etc/vps-sh/feed | tr -d '\r\n ')"; VPS_CACHE_DIR="/run/vps-sh"
+[ -f /etc/vps-sh/feed ] && VPS_APP_FEED="$(head -n 1 /etc/vps-sh/feed | tr -d '\r\n ')"
+if [ "${VS_LIB_ONLY:-0}" = "1" ]; then
+VPS_CACHE_DIR="${VPS_CACHE_DIR:-/tmp}"
+else
+VPS_CACHE_DIR="/run/vps-sh"
 if ! mkdir -p -m 700 "$VPS_CACHE_DIR" 2>/dev/null || [ ! -O "$VPS_CACHE_DIR" ]; then
 VPS_CACHE_DIR=$(mktemp -d /tmp/.vps-cache.XXXXXX 2>/dev/null || echo "/tmp"); chmod 700 "$VPS_CACHE_DIR" 2>/dev/null || true
+fi
 fi
 json_str(){ local s="${1:-}"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
 s="${s//[$'\001'-$'\037']/}"; printf '"%s"' "$s"
@@ -145,7 +156,11 @@ if [ "$src" != "/usr/local/bin/vs" ]; then
 [ -f /usr/local/bin/vs ] || registered=1; cmp -s "$src" /usr/local/bin/vs 2>/dev/null || cp -f "$src" /usr/local/bin/vs
 fi
 elif [ ! -f /usr/local/bin/vs ]; then
-curl -fsSL "$VPS_RAW_URL/vps.sh" -o /usr/local/bin/.vs.boot 2>/dev/null && mv -f /usr/local/bin/.vs.boot /usr/local/bin/vs && registered=1 || { rm -f /usr/local/bin/.vs.boot 2>/dev/null; return 0; }
+if curl -fsSL "$VPS_RAW_URL/vps.sh" -o /usr/local/bin/.vs.boot 2>/dev/null && [ -s /usr/local/bin/.vs.boot ] && bash -n /usr/local/bin/.vs.boot 2>/dev/null; then
+mv -f /usr/local/bin/.vs.boot /usr/local/bin/vs; registered=1
+else
+rm -f /usr/local/bin/.vs.boot 2>/dev/null || true; return 0
+fi
 fi
 chmod 755 /usr/local/bin/vs 2>/dev/null || true; [ -L /usr/bin/vs ] || ln -sf /usr/local/bin/vs /usr/bin/vs 2>/dev/null || true
 fw_heal 2>/dev/null || true; [ "$registered" -eq 1 ] && echo -e "${CLR_CYAN}已注册全局命令: vs${CLR_RESET}" >&2 || true
@@ -162,7 +177,7 @@ case "$confirm" in
 local self=$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")
 systemctl disable --now vps-firewall 2>/dev/null || true; rm -f /etc/systemd/system/docker.service.d/10-vps-fw.conf 2>/dev/null || true
 local t; for t in iptables ip6tables; do $t -w 2 -D DOCKER-USER -j VPS-DOCKER 2>/dev/null || true; done
-rm -f /etc/systemd/system/vps-firewall.service /usr/local/bin/vs /usr/bin/vs 2>/dev/null || true
+rm -f /etc/systemd/system/vps-firewall.service /usr/local/bin/vs /usr/local/bin/vs.bak /usr/bin/vs 2>/dev/null || true
 rm -rf /etc/vps-sh /run/vps-sh /tmp/.vps_* 2>/dev/null || true; systemctl daemon-reload 2>/dev/null || true
 [ -f "$self" ] && rm -f "$self" 2>/dev/null || true; echo "已卸载"; exit 0; ;;
 *)
@@ -290,9 +305,16 @@ sed -i -E 's/^precedence ::ffff:0:0\/96  100/#precedence ::ffff:0:0\/96  100/' /
 }
 net_prio_v6(){ net_v6_first "$@"; }; net_trace(){
 if ! command -v nexttrace >/dev/null 2>&1; then
-printf "${CLR_CYAN}正在下载安装 NextTrace...${CLR_RESET}\n"; curl -fsSLm 15 https://nxtrace.org/nt | bash || {
+printf "${CLR_CYAN}正在下载安装 NextTrace...${CLR_RESET}\n"; local tmp=$(mktemp) rc=0
+if curl -fsSLm 15 https://nxtrace.org/nt -o "$tmp" && [ -s "$tmp" ]; then
+bash "$tmp" || rc=$?
+else
+rc=1
+fi
+rm -f "$tmp"
+if [ "$rc" -ne 0 ]; then
 printf "${CLR_RED}错误: 安装 NextTrace 失败${CLR_RESET}\n" >&2; return 1
-}
+fi
 fi
 local target="${1:-}"
 if [ -n "$target" ]; then
@@ -369,34 +391,126 @@ sec_get_pwd(){ local a=$(sshd -T 2>/dev/null | awk '/^passwordauthentication / {
 }
 sec_get_root_login(){ local s=$(sshd -T 2>/dev/null | awk '/^permitrootlogin / {print $2; exit}'); echo "${s:-prohibit-password}"
 }
-sec_ssh_apply(){ local port="${1:-$(sec_get_port)}"; local pwd="${2:-$(sec_get_pwd)}"; local root="${3:-$(sec_get_root_login)}"
+_sec_restore_file(){ local f="$1" had="$2" data="$3"
+if [ "$had" -eq 1 ]; then
+if [ -n "$data" ]; then
+printf '%s\n' "$data" > "$f"
+else
+: > "$f"
+fi
+else
+rm -f "$f"
+fi
+}
+sec_ssh_apply(){ require_root; local port="${1:-$(sec_get_port)}"; local pwd="${2:-$(sec_get_pwd)}"
+local root="${3:-$(sec_get_root_login)}"
 if [[ ! "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
 printf "${CLR_RED}错误: 端口无效 (1-65535)${CLR_RESET}\n" >&2; return 1
 fi
-mkdir -p /etc/ssh/sshd_config.d; local conf="/etc/ssh/sshd_config.d/00-vps.conf"; local bak=""; [ -f "$conf" ] && bak=$(cat "$conf")
+[ -d /run/sshd ] || install -d -m 0755 /run/sshd 2>/dev/null || true; mkdir -p /etc/ssh/sshd_config.d
+local conf="/etc/ssh/sshd_config.d/00-vps.conf"; local had_conf=0 bak=""
+if [ -f "$conf" ]; then
+had_conf=1; bak=$(cat "$conf")
+fi
     cat > "$conf" << EOF
 Port $port
 PasswordAuthentication $pwd
 PermitRootLogin $root
 EOF
 if ! sshd -t >/dev/null 2>&1; then
-if [ -n "$bak" ]; then
-echo "$bak" > "$conf"
-else
-rm -f "$conf"
+_sec_restore_file "$conf" "$had_conf" "$bak"; printf "${CLR_RED}错误: SSH 配置语法校验失败，已自动回滚${CLR_RESET}\n" >&2; return 1
 fi
-printf "${CLR_RED}错误: SSH 配置语法校验失败，已自动回滚${CLR_RESET}\n" >&2; return 1
-fi
+local use_socket=0
 if systemctl is-active --quiet ssh.socket 2>/dev/null || systemctl is-enabled --quiet ssh.socket 2>/dev/null; then
-mkdir -p /etc/systemd/system/ssh.socket.d
-        cat > /etc/systemd/system/ssh.socket.d/listen.conf << EOF
+use_socket=1
+fi
+local want_pwd want_root; want_pwd=$(printf '%s' "$pwd" | tr '[:upper:]' '[:lower:]')
+want_root=$(printf '%s' "$root" | tr '[:upper:]' '[:lower:]')
+if [ "$want_root" = "without-password" ]; then want_root="prohibit-password"; fi
+local dump; dump=$(sshd -T 2>/dev/null || true)
+if [ -n "$dump" ]; then
+local eff_pwd="" eff_root="" eff_port=0 mismatch=0
+IFS='|' read -r eff_pwd eff_root eff_port <<< "$(awk -v p="$port" '
+            /^passwordauthentication / && !a {a=tolower($2)}
+            /^permitrootlogin / && !r {r=tolower($2); if(r=="without-password") r="prohibit-password"}
+            /^port / && $2==p {ok=1}
+            END {printf "%s|%s|%d", a, r, ok+0}
+        ' <<< "$dump")"
+if [ -n "$eff_pwd" ] && [ "$eff_pwd" != "$want_pwd" ]; then mismatch=1; fi
+if [ -n "$eff_root" ] && [ "$eff_root" != "$want_root" ]; then mismatch=1; fi
+if [ "$use_socket" -eq 0 ] && [ "${eff_port:-0}" -ne 1 ]; then mismatch=1; fi
+if [ "$mismatch" -eq 1 ]; then
+_sec_restore_file "$conf" "$had_conf" "$bak"
+printf "${CLR_RED}错误: SSH 配置被主配置或其他 drop-in 覆盖 (期望 Port=%s Pwd=%s Root=%s，实际 Pwd=%s Root=%s)，已自动回滚${CLR_RESET}\n" \
+"$port" "$want_pwd" "$want_root" "${eff_pwd:-?}" "${eff_root:-?}" >&2; return 1
+fi
+fi
+local sconf="/etc/systemd/system/ssh.socket.d/listen.conf"; local had_sconf=0 sbak="" touched_socket=0 restarted=0 apply_ok=1
+if [ "$use_socket" -eq 1 ]; then
+touched_socket=1; mkdir -p /etc/systemd/system/ssh.socket.d
+if [ -f "$sconf" ]; then
+had_sconf=1; sbak=$(cat "$sconf")
+fi
+        cat > "$sconf" << EOF
 [Socket]
 ListenStream=
 ListenStream=$port
 EOF
-systemctl daemon-reload 2>/dev/null || true; systemctl restart ssh.socket 2>/dev/null || true
+systemctl stop ssh.service 2>/dev/null || true; systemctl daemon-reload 2>/dev/null || true
+if systemctl restart ssh.socket 2>/dev/null; then
+restarted=1
+else
+apply_ok=0
 fi
-systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
+elif [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then local svc=""
+if systemctl cat ssh.service >/dev/null 2>&1; then
+svc="ssh.service"; elif systemctl cat sshd.service >/dev/null 2>&1; then svc="sshd.service"
+fi
+if [ -n "$svc" ]; then
+if systemctl restart "$svc" 2>/dev/null; then
+restarted=1
+else
+apply_ok=0
+fi
+fi
+else
+local init_s=""
+if [ -x /etc/init.d/ssh ]; then
+init_s="/etc/init.d/ssh"; elif [ -x /etc/init.d/sshd ]; then init_s="/etc/init.d/sshd"
+fi
+if [ -n "$init_s" ]; then
+if "$init_s" restart >/dev/null 2>&1; then
+restarted=1
+else
+apply_ok=0
+fi
+fi
+fi
+if [ "$apply_ok" -eq 1 ] && [ "$restarted" -eq 1 ] && command -v ss >/dev/null 2>&1; then
+local ss_out=""
+if ss_out=$(ss -H -lnt 2>/dev/null); then
+if ! awk -v p=":$port" '$4 ~ (p "$") {f=1} END {exit !f}' <<< "$ss_out"; then
+sleep 0.2; ss_out=$(ss -H -lnt 2>/dev/null || true)
+if ! awk -v p=":$port" '$4 ~ (p "$") {f=1} END {exit !f}' <<< "$ss_out"; then
+apply_ok=0
+fi
+fi
+fi
+fi
+if [ "$apply_ok" -ne 1 ]; then
+_sec_restore_file "$conf" "$had_conf" "$bak"
+if [ "$touched_socket" -eq 1 ]; then
+_sec_restore_file "$sconf" "$had_sconf" "$sbak"; systemctl stop ssh.service 2>/dev/null || true
+systemctl daemon-reload 2>/dev/null || true; systemctl restart ssh.socket 2>/dev/null || true
+elif [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+systemctl restart ssh.service 2>/dev/null || systemctl restart sshd.service 2>/dev/null || true
+else
+if [ -x /etc/init.d/ssh ]; then
+/etc/init.d/ssh restart >/dev/null 2>&1 || true; elif [ -x /etc/init.d/sshd ]; then /etc/init.d/sshd restart >/dev/null 2>&1 || true
+fi
+fi
+printf "${CLR_RED}错误: SSH 服务应用或端口 %s 监听校验失败，已自动回滚${CLR_RESET}\n" "$port" >&2; return 1
+fi
 }
 sec_port(){ require_root; local port="$1"
 if [[ ! "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
@@ -1425,10 +1539,10 @@ fi
 }
 ops_update(){ require_root; printf "${CLR_CYAN}检查新版本...${CLR_RESET}\n"; mkdir -p /usr/local/bin; local tmp
 tmp=$(mktemp /usr/local/bin/.vs.XXXXXX 2>/dev/null || mktemp); trap "rm -f '$tmp'" EXIT INT TERM HUP
-if ! curl -fsSLm 15 "$VPS_RAW_URL/vps.sh" -o "$tmp"; then
+if ! curl -fsSLm 15 "$VPS_RAW_URL/vps.sh" -o "$tmp" || [ ! -s "$tmp" ]; then
 rm -f "$tmp"; trap - EXIT INT TERM HUP; printf "${CLR_RED}错误: 无法获取远端脚本${CLR_RESET}\n" >&2; return 1
 fi
-if ! bash -n "$tmp" 2>/dev/null; then
+if [ "$(head -c 2 "$tmp" 2>/dev/null || true)" != '#!' ] || ! bash -n "$tmp" 2>/dev/null; then
 rm -f "$tmp"; trap - EXIT INT TERM HUP; printf "${CLR_RED}错误: 脚本语法校验失败${CLR_RESET}\n" >&2; return 1
 fi
 local remote_ver=$(grep -o 'VPS_VERSION="[^"]*"' "$tmp" 2>/dev/null | head -n 1 | cut -d'"' -f2 || true)
@@ -1449,7 +1563,8 @@ read -r -p "确认更新? (y/N, 回车取消): " confirm
 fi
 case "$confirm" in
 [yY][eE][sS]|[yY]|-y|--yes)
-chmod 755 "$tmp"; mv -f "$tmp" /usr/local/bin/vs; trap - EXIT INT TERM HUP; rm -f "${VPS_CACHE_DIR:-/tmp}/update_meta" 2>/dev/null || true
+[ -f /usr/local/bin/vs ] && cp -af /usr/local/bin/vs /usr/local/bin/vs.bak 2>/dev/null || true; chmod 755 "$tmp"
+mv -f "$tmp" /usr/local/bin/vs; trap - EXIT INT TERM HUP; rm -f "${VPS_CACHE_DIR:-/tmp}/update_meta" 2>/dev/null || true
 [ -L /usr/bin/vs ] || ln -sf /usr/local/bin/vs /usr/bin/vs 2>/dev/null || true
 if [ -f /etc/vps-sh/fw.conf ] || iptables -C INPUT -j VPS-IN 2>/dev/null; then
 /usr/local/bin/vs fw_apply >/dev/null 2>&1 || true; /usr/local/bin/vs fw_save >/dev/null 2>&1 || true
@@ -1767,7 +1882,13 @@ if docker_is_installed; then
 printf "Docker 已安装 (%s)\n" "$(docker -v 2>/dev/null)"; docker_is_active || systemctl enable --now docker
 fw_is_initialized && { fw_apply; fw_save; } || true; return 0
 fi
-curl -fsSL https://get.docker.com | sh; systemctl enable --now docker; fw_is_initialized && { fw_apply; fw_save; } || true
+local tmp=$(mktemp) rc=0
+if curl -fsSLm 30 https://get.docker.com -o "$tmp" && [ -s "$tmp" ]; then
+sh "$tmp" || rc=$?
+else
+rc=1
+fi
+rm -f "$tmp"; [ "$rc" -eq 0 ] || return "$rc"; systemctl enable --now docker; fw_is_initialized && { fw_apply; fw_save; } || true
 }
 docker_ps(){
 if ! docker_is_installed; then
@@ -2501,6 +2622,7 @@ read -r -p "请选择: " choice
 case "$choice" in 1) ui_sys ;; 2) ui_net ;; 3) ui_sec ;; 4) ui_ops ;; 5) ui_app_engine ;; 6) ui_docker ;; ai|AI) clear; ai_snapshot; echo; read -r -p "按回车返回..." ;; 00) ui_mgr ;; 0|"") exit 0 ;; *) ;; esac
 done
 }
+if [ "${VS_LIB_ONLY:-0}" != "1" ]; then
 case "${1:-}" in
 -h|--help|help) vs_help ;; rm|un|uninstall) shift; sys_uninstall "$@" ;; up|update) shift; ops_update "$@" ;;
 app|apps|market) ui_app_engine ;; docker|d) ui_docker ;; ai) shift; ai_snapshot "$@" ;;
@@ -2508,7 +2630,7 @@ app|apps|market) ui_app_engine ;; docker|d) ui_docker ;; ai) shift; ai_snapshot 
 sys_shortcut 2>/dev/null || true
 if [ $# -eq 0 ]; then
 if [ "$0" = "bash" ] || [ "$0" = "sh" ] || [ "$0" = "-bash" ] || [ "$0" = "-sh" ]; then
-if [ -t 1 ] && [ ! -t 0 ] && [ -r /dev/tty ]; then
+if [ -t 1 ] && [ ! -t 0 ] && { : < /dev/tty; } 2>/dev/null; then
 exec < /dev/tty
 fi
 fi
@@ -2525,3 +2647,4 @@ fi
 fi
 ;;
 esac
+fi
