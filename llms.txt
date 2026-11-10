@@ -13,7 +13,7 @@ curl -fsSL https://raw.githubusercontent.com/666OS/vps-sh/main/vps.sh | bash
 ## AI Agent Integration & Machine Snapshot
 
 - `vs ai`: Generates a high-density, token-optimized system diagnosis snapshot and command manifest (~250 tokens).
-- `vs ai --json`: Outputs minified, single-line JSON of the live system state (OS, CPU, memory, swap, disk, outbound IP, SSH policy, authorized-key readiness (`has_keys`, `root_key`, `sudo_key`) & `sudoers`, fail2ban, firewall install/conflict/policy/open ports, Docker status, and installed app items with `port`, `host`, `ports`, and `status`).
+- `vs ai --json`: Outputs minified, single-line JSON (`schema: 1`, additive evolution) of the live system state (OS, CPU, memory, swap, disk, outbound IP, SSH policy, authorized-key presence vs readiness (`has_keys` = any valid key file exists; `key_login_ready` = an SSH-loginable root/sudo account holds a valid key, which gates `sec_lock_pwd`; `root_key`, `sudo_key`) & `sudoers`, fail2ban, firewall install/conflict/policy/open ports, Docker status, and installed app items with numeric/`null` `port`, `host`, `ports`, and `status` (`running`|`partial`|`error`|`stopped`|`unknown`)).
 
 ## CLI Operations Manual (Deterministic Primitives)
 

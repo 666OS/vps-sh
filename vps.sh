@@ -18,7 +18,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="93a26a3"; VPS_BUILD_TIME="2026-11-10 12:45:25"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="85ed76a"; VPS_BUILD_TIME="2026-11-10 13:44:27"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -573,13 +573,51 @@ local u="${f##*90-}"; [ -n "$u" ] && [ "$u" != "*" ] && id -u "$u" >/dev/null 2>
 fi
 done
 }
+_sec_user_home(){ local u="${1:-root}" h=""
+if [ -r /etc/passwd ]; then
+h=$(awk -F: -v u="$u" '$1==u {print $6; exit}' /etc/passwd 2>/dev/null || true)
+fi
+if [ -n "$h" ]; then
+echo "$h"; elif [ "$u" = "root" ]; then echo "/root"
+else
+echo "/home/$u"
+fi
+}
+_sec_user_loginable(){ local u="${1:-root}" sh=""
+if [ -r /etc/passwd ]; then
+sh=$(awk -F: -v u="$u" '$1==u {print $7; exit}' /etc/passwd 2>/dev/null || true)
+if [ -n "$sh" ] && [[ "$sh" =~ (^|/)(nologin|false|sync)$ ]]; then
+return 1
+fi
+fi
+return 0
+}
 sec_has_keys(){ local target="${1:-}"
 if [ -n "$target" ]; then
-local h="/root"; [ "$target" != "root" ] && h="/home/$target"; [ -s "$h/.ssh/authorized_keys" ]; return $?
+local h=$(_sec_user_home "$target"); local ak="$h/.ssh/authorized_keys"; [ -s "$ak" ] || return 1
+awk '
+        { sub(/\r$/, "") }
+        !/^[[:space:]]*(#|$)/ {
+            for (i = 1; i < NF; i++) {
+                if ($i ~ /^(ssh-(ed25519|rsa|dss)|ecdsa-sha2-nistp(256|384|521)|sk-(ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com)$/ &&
+                    $(i+1) ~ /^[A-Za-z0-9+\/=]+$/ && length($(i+1)) >= 4) {
+                    found = 1
+                    exit
+                }
+            }
+        }
+        END { exit !found }
+        ' "$ak" 2>/dev/null
+return $?
 fi
-[ -s /root/.ssh/authorized_keys ] && return 0; local u
+if [ "$(sec_get_root_login 2>/dev/null || echo "yes")" != "no" ] && _sec_user_loginable root && sec_has_keys root; then
+return 0
+fi
+local u
 for u in $(sec_list_sudoers); do
-[ -s "/home/$u/.ssh/authorized_keys" ] && return 0
+if _sec_user_loginable "$u" && sec_has_keys "$u"; then
+return 0
+fi
 done
 return 1
 }
@@ -587,11 +625,10 @@ sec_key(){ require_root; local key="${1:-}"; local u="${2:-root}"
 if [ -z "$key" ]; then
 printf "${CLR_RED}错误: 请提供 SSH 公钥或 URL${CLR_RESET}\n" >&2; return 1
 fi
-local h="/root"
 if [ "$u" != "root" ]; then
-id "$u" >/dev/null 2>&1 || return 1; h="/home/$u"
+id "$u" >/dev/null 2>&1 || return 1
 fi
-local tmp=$(mktemp)
+local h=$(_sec_user_home "$u"); local tmp=$(mktemp)
 if [[ "$key" =~ ^https?:// ]]; then
 curl -fsSLm 8 "$key" > "$tmp" || { rm -f "$tmp"; printf "${CLR_RED}错误: 获取公钥失败${CLR_RESET}\n" >&2; return 1; }
 else
@@ -616,12 +653,12 @@ if [ ! -t 0 ] || [ ! -t 1 ]; then
 printf "${CLR_RED}错误: sec_gen_key 禁止在非交互环境调用 (防私钥泄露至日志/上下文)${CLR_RESET}\n" >&2
 printf "${CLR_DIM}请在本地运行 ssh-keygen，再通过 vs sec_key <公钥> 导入${CLR_RESET}\n" >&2; return 1
 fi
-local u="${1:-root}"; local h="/root"
+local u="${1:-root}"
 if [ "$u" != "root" ]; then
-id "$u" >/dev/null 2>&1 || return 1; h="/home/$u"
+id "$u" >/dev/null 2>&1 || return 1
 fi
-local tmp_dir; tmp_dir=$(mktemp -d /run/vps-key.XXXXXX 2>/dev/null) || { printf "${CLR_RED}错误: 无法在 /run (内存) 创建临时目录${CLR_RESET}\n" >&2
-return 1
+local h=$(_sec_user_home "$u"); local tmp_dir; tmp_dir=$(mktemp -d /run/vps-key.XXXXXX 2>/dev/null) || {
+printf "${CLR_RED}错误: 无法在 /run (内存) 创建临时目录${CLR_RESET}\n" >&2; return 1
 }
 trap "rm -rf '$tmp_dir'" EXIT INT TERM HUP; chmod 700 "$tmp_dir"; local priv="$tmp_dir/id_ed25519"; local pub="$tmp_dir/id_ed25519.pub"
 ssh-keygen -t ed25519 -N "" -f "$priv" -C "$u@$(hostname)" >/dev/null 2>&1; mkdir -p "$h/.ssh"; chmod 700 "$h/.ssh"
@@ -640,7 +677,7 @@ sec_show_key(){ printf "${CLR_YELLOW}出于安全考虑，私钥不在服务端�
 }
 sec_clean_key(){ require_root; local u="${1:-}"; local files=() f
 if [ -n "$u" ]; then
-local h="/root"; [ "$u" != "root" ] && h="/home/$u"; [ -f "$h/.ssh/id_ed25519_vps" ] && files+=("$h/.ssh/id_ed25519_vps")
+local h=$(_sec_user_home "$u"); [ -f "$h/.ssh/id_ed25519_vps" ] && files+=("$h/.ssh/id_ed25519_vps")
 else
 for f in /root/.ssh/id_ed25519_vps /home/*/.ssh/id_ed25519_vps; do
 [ -f "$f" ] && files+=("$f")
@@ -663,7 +700,7 @@ done
 }
 sec_lock_pwd(){ require_root
 if ! sec_has_keys; then
-printf "${CLR_RED}错误: 未配置 SSH 公钥，禁止禁用密码${CLR_RESET}\n" >&2; return 1
+printf "${CLR_RED}错误: 当前可登录账户未配置有效 SSH 公钥，禁止禁用密码${CLR_RESET}\n" >&2; return 1
 fi
 sec_ssh_apply "$(sec_get_port)" "no" "$(sec_get_root_login)"
 }
@@ -683,10 +720,12 @@ fi
 if [ "$(sec_get_pwd)" = "no" ]; then
 local has_user_key=0
 for u in $sudoers; do
-[ -s "/home/$u/.ssh/authorized_keys" ] && has_user_key=1 && break
+if _sec_user_loginable "$u" && sec_has_keys "$u"; then
+has_user_key=1; break
+fi
 done
 if [ "$has_user_key" -eq 0 ]; then
-printf "${CLR_RED}错误: sudo 用户未配置密钥，禁止禁用 Root 登录${CLR_RESET}\n" >&2; return 1
+printf "${CLR_RED}错误: 可登录的 sudo 用户未配置有效密钥，禁止禁用 Root 登录${CLR_RESET}\n" >&2; return 1
 fi
 fi
 elif [ "$mode" = "prohibit-password" ] || [ "$mode" = "without-password" ]; then
@@ -697,14 +736,13 @@ fi
 sec_ssh_apply "$(sec_get_port)" "$(sec_get_pwd)" "$mode"
 }
 sec_lock_root(){ sec_root_login "no"; }; sec_unlock_root(){ sec_root_login "yes"; }
-sec_root_keyonly(){ sec_root_login "prohibit-password"; }; sec_user_list(){ local root_key="否"
-[ -s /root/.ssh/authorized_keys ] && root_key="是"; printf "%-16s | UID: %-5s | 权限: %-8s | 拥有密钥: %s\n" "root" "0" "特权" "$root_key"
+sec_root_keyonly(){ sec_root_login "prohibit-password"; }; sec_user_list(){ local root_key="否"; sec_has_keys root && root_key="是"
+printf "%-16s | UID: %-5s | 权限: %-8s | 拥有密钥: %s\n" "root" "0" "特权" "$root_key"
 awk -F: '$3 >= 1000 && $3 < 60000 {printf "%s %s\n", $1, $3}' /etc/passwd | while read -r u uid; do local perm="普通"
 if [ -f "/etc/sudoers.d/90-$u" ]; then
 perm="sudo (免密)"; elif id -nG "$u" 2>/dev/null | grep -Eq '\b(sudo|wheel)\b'; then perm="sudo (密码)"
 fi
-local has_key="否"; [ -s "/home/$u/.ssh/authorized_keys" ] && has_key="是"
-printf "%-16s | UID: %-5s | 权限: %-8s | 拥有密钥: %s\n" "$u" "$uid" "$perm" "$has_key"
+local has_key="否"; sec_has_keys "$u" && has_key="是"; printf "%-16s | UID: %-5s | 权限: %-8s | 拥有密钥: %s\n" "$u" "$uid" "$perm" "$has_key"
 done
 }
 sec_passwd(){ require_root; local u="${1:-root}"; local pwd="${2:-}"
@@ -735,7 +773,7 @@ echo "$u:$pwd" | chpasswd
 else
 usermod -p '*' "$u" 2>/dev/null || true
 fi
-chmod 755 "/home/$u" 2>/dev/null || true
+local h=$(_sec_user_home "$u"); chmod 755 "$h" 2>/dev/null || true
 if ! command -v sudo >/dev/null 2>&1; then
 apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y sudo
 fi
@@ -748,8 +786,8 @@ fi
 if ! visudo -cf "/etc/sudoers.d/90-$u" >/dev/null 2>&1; then
 rm -f "/etc/sudoers.d/90-$u"; printf "${CLR_RED}错误: sudoers 语法校验失败${CLR_RESET}\n" >&2; return 1
 fi
-mkdir -p "/home/$u/.ssh"; chmod 700 "/home/$u/.ssh"; touch "/home/$u/.ssh/authorized_keys"; chmod 600 "/home/$u/.ssh/authorized_keys"
-chown -R "$u:$u" "/home/$u/.ssh"; printf "${CLR_GREEN}已创建 sudo 用户: %s${CLR_RESET}\n" "$u"
+mkdir -p "$h/.ssh"; chmod 700 "$h/.ssh"; touch "$h/.ssh/authorized_keys"; chmod 600 "$h/.ssh/authorized_keys"; chown -R "$u:$u" "$h/.ssh"
+printf "${CLR_GREEN}已创建 sudo 用户: %s${CLR_RESET}\n" "$u"
 }
 sec_user_del(){ require_root; local u="${1:-}"
 if [ -z "$u" ]; then
@@ -1827,18 +1865,22 @@ ipv6="$k_ip6"
 fi
 local bbr=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "unknown"); local ssh_port=$(sec_get_port 2>/dev/null || echo 22)
 local pwd_auth=$(sec_get_pwd 2>/dev/null || echo "yes"); local root_login=$(sec_get_root_login 2>/dev/null || echo "yes")
-local root_key=false sudo_key=false has_keys=false sudoers=""; sec_has_keys root 2>/dev/null && root_key=true || true
+local root_key=false sudo_key=false has_keys=false key_login_ready=false sudoers=""; local root_loginable=false sudo_login_key=false
+_sec_user_loginable root && root_loginable=true || true; sec_has_keys root 2>/dev/null && root_key=true || true
 sudoers=$(sec_list_sudoers 2>/dev/null | awk '!seen[$0]++ { o = (o ? o " " : "") $0 } END { print o }' || true)
 if [ -n "$sudoers" ]; then
-local su
-for su in $sudoers; do
-if sec_has_keys "$su" 2>/dev/null; then
-sudo_key=true; break
+local suser
+for suser in $sudoers; do
+if sec_has_keys "$suser" 2>/dev/null; then
+sudo_key=true; _sec_user_loginable "$suser" && sudo_login_key=true || true
 fi
 done
 fi
 if [ "$root_key" = "true" ] || [ "$sudo_key" = "true" ]; then
 has_keys=true
+fi
+if { [ "$root_login" != "no" ] && [ "$root_key" = "true" ] && [ "$root_loginable" = "true" ]; } || [ "$sudo_login_key" = "true" ]; then
+key_login_ready=true
 fi
 local f2b_installed=false f2b_active=false f2b_banned=0
 if command -v fail2ban-client >/dev/null 2>&1; then
@@ -1892,12 +1934,14 @@ local installed_apps="" app_items_json="[]" app_disp=""; local installed_list=$(
 if [ -n "$installed_list" ]; then
 installed_apps=$(tr '\n' ' ' <<< "$installed_list" | sed 's/ *$//'); local docker_snapshot=""
 if $docker_active; then
-docker_snapshot=$(docker ps -a --format '{{.Label "com.docker.compose.project"}}|{{.Names}}|{{.State}}' 2>/dev/null || true)
+if ! docker_snapshot=$(docker ps -a --format '{{.Label "com.docker.compose.project"}}|{{.Names}}|{{.State}}' 2>/dev/null); then
+docker_snapshot="__DOCKER_ERR__"
+fi
 fi
 local items_buf="" disp_buf="" a st_raw st_en ap ah acf aenv_p apubs a_pub_json a_item
 for a in $installed_apps; do
 st_raw=$(app_status "$a" "$docker_snapshot")
-case "$st_raw" in 运行中) st_en="running" ;; 部分运行) st_en="partial" ;; 启动异常) st_en="error" ;; *) st_en="stopped" ;; esac
+case "$st_raw" in 运行中) st_en="running" ;; 部分运行) st_en="partial" ;; 启动异常) st_en="error" ;; 状态未知) st_en="unknown" ;; *) st_en="stopped" ;; esac
 ap=$(app_get_port "$a"); ah=$(app_get_host "$a"); acf="/opt/vps-sh/apps/$a/compose.yaml"
 [ -f "$acf" ] || acf="/opt/vps-sh/apps/$a/docker-compose.yml"; aenv_p=""
 if [ -f "/opt/vps-sh/apps/$a/.env" ]; then
@@ -1905,13 +1949,13 @@ aenv_p=$(awk -F= '$1=="APP_PORT" {print $2; exit}' "/opt/vps-sh/apps/$a/.env" | 
 fi
 apubs=$(app_get_ports "$acf" "$aenv_p" "$ah" 2>/dev/null || true); a_pub_json=$(json_arr $apubs)
 a_item=$(printf '{"id":%s,"status":%s,"port":%s,"host":%s,"ports":%s}' \
-"$(json_str "$a")" "$(json_str "$st_en")" "$(json_str "$ap")" "$(json_str "$ah")" "$a_pub_json")
+"$(json_str "$a")" "$(json_str "$st_en")" "$(json_num "$ap")" "$(json_str "$ah")" "$a_pub_json")
 items_buf="${items_buf:+$items_buf,}$a_item"; disp_buf="${disp_buf:+$disp_buf, }${a}(${st_en}:${ap}@${ah})"
 done
 [ -n "$items_buf" ] && app_items_json="[$items_buf]"; app_disp="$disp_buf"
 fi
 if [ "$mode" = "--json" ] || [ "$mode" = "-j" ] || [ "$mode" = "json" ]; then
-printf '{"schema":1,"sys":{"os":%s,"kernel":%s,"arch":%s,"cores":%s,"load":%s,"mem_used_mb":%s,"mem_total_mb":%s,"mem_pct":%s,"swap_used_mb":%s,"swap_total_mb":%s,"swap_pct":%s,"disk":%s},"net":{"ipv4":%s,"ipv6":%s,"bbr":%s},"sec":{"ssh_port":%s,"pwd_auth":%s,"root_login":%s,"has_keys":%s,"root_key":%s,"sudo_key":%s,"sudoers":%s,"f2b":{"installed":%s,"active":%s,"banned":%s}},"fw":{"installed":%s,"mode":%s,"conflict":%s,"open_ports":%s,"ping_allow":%s,"ddos_protect":%s},"docker":{"installed":%s,"active":%s,"version":%s,"running":%s,"images":%s},"apps":{"installed":%s,"items":%s,"catalog":"https://raw.githubusercontent.com/666OS/vps-apps/main/llms.txt"}}\n' \
+printf '{"schema":1,"sys":{"os":%s,"kernel":%s,"arch":%s,"cores":%s,"load":%s,"mem_used_mb":%s,"mem_total_mb":%s,"mem_pct":%s,"swap_used_mb":%s,"swap_total_mb":%s,"swap_pct":%s,"disk":%s},"net":{"ipv4":%s,"ipv6":%s,"bbr":%s},"sec":{"ssh_port":%s,"pwd_auth":%s,"root_login":%s,"has_keys":%s,"key_login_ready":%s,"root_key":%s,"sudo_key":%s,"sudoers":%s,"f2b":{"installed":%s,"active":%s,"banned":%s}},"fw":{"installed":%s,"mode":%s,"conflict":%s,"open_ports":%s,"ping_allow":%s,"ddos_protect":%s},"docker":{"installed":%s,"active":%s,"version":%s,"running":%s,"images":%s},"apps":{"installed":%s,"items":%s,"catalog":"https://raw.githubusercontent.com/666OS/vps-apps/main/llms.txt"}}\n' \
 "$(json_str "$os")" \
 "$(json_str "$kernel")" \
 "$(json_str "$arch")" \
@@ -1931,6 +1975,7 @@ printf '{"schema":1,"sys":{"os":%s,"kernel":%s,"arch":%s,"cores":%s,"load":%s,"m
 "$(json_str "$pwd_auth")" \
 "$(json_str "$root_login")" \
 "$(json_bool "$has_keys")" \
+"$(json_bool "$key_login_ready")" \
 "$(json_bool "$root_key")" \
 "$(json_bool "$sudo_key")" \
 "$(json_arr $sudoers)" \
@@ -1961,7 +2006,7 @@ printf "${CLR_BOLD}=== VPS-SH System Diagnostic Snapshot ===${CLR_RESET}\n"
 printf "OS: %s (%s) | Cores: %s | Load: %s\n" "$os" "$arch" "$cores" "$load"
 printf "Memory: %s/%s MB (%s%%) | Swap: %s/%s MB (%s%%) | Disk: %s\n" "$m_u" "$m_t" "$m_p" "$s_u" "$s_t" "$s_p" "$disk"
 printf "Network: IPv4: %s | IPv6: %s | BBR: %s\n" "${ipv4:-offline}" "${ipv6:-none}" "$bbr"
-printf "Security: SSH Port: %s | Password Auth: %s | Root Login: %s | Keys: %s | Sudoers: %s | Fail2ban: %s\n" "$ssh_port" "$pwd_auth" "$root_login" "$has_keys" "${sudoers:-none}" "$f2b_disp"
+printf "Security: SSH Port: %s | Password Auth: %s | Root Login: %s | Keys: %s (ready: %s) | Sudoers: %s | Fail2ban: %s\n" "$ssh_port" "$pwd_auth" "$root_login" "$has_keys" "$key_login_ready" "${sudoers:-none}" "$f2b_disp"
 local ports_disp="${fw_ports// /, }"
 printf "Firewall: %s | Open Ports: %s | Ping: %s | DDoS Protect: %s\n" "$fw_disp" "${ports_disp:-none}" "$ping_disp" "$ddos_disp"
 printf "Docker: %s | Apps: %s\n\n" "$docker_disp" "${app_disp:-none}"
@@ -2301,10 +2346,16 @@ echo "未安装"; return 0
 fi
 local states=""
 if [ "$#" -ge 2 ]; then
-states=$(awk -F'|' -v p="$name" '($1==p || $2==p) && $3!="" {print $3}' <<< "$snapshot")
+if [ "$snapshot" = "__DOCKER_ERR__" ]; then
+echo "状态未知"; return 0
+fi
+states=$(awk -F'|' -v p="$name" 'BEGIN { lp = tolower(p) } $3 != "" && (tolower($1) == lp || tolower($2) == lp) { print $3 }' <<< "$snapshot")
 else
+local cname=$(tr '[:upper:]' '[:lower:]' <<< "$name")
 states=$(docker ps -a --filter "label=com.docker.compose.project=$name" --format '{{.State}}' 2>/dev/null || true)
+[ -z "$states" ] && [ "$cname" != "$name" ] && states=$(docker ps -a --filter "label=com.docker.compose.project=$cname" --format '{{.State}}' 2>/dev/null || true)
 [ -z "$states" ] && states=$(docker ps -a --filter "name=^/${name}$" --format '{{.State}}' 2>/dev/null || true)
+[ -z "$states" ] && [ "$cname" != "$name" ] && states=$(docker ps -a --filter "name=^/${cname}$" --format '{{.State}}' 2>/dev/null || true)
 fi
 if [ -z "$states" ]; then
 echo "已停止"; return 0
@@ -2765,7 +2816,8 @@ local col_badge=""
 if [ "$st" = "运行中" ]; then
 raw_badge=" [已安装]"; col_badge=" ${CLR_GREEN}[已安装]${CLR_RESET}"; elif [ "$st" = "已停止" ]; then raw_badge=" [已停止]"
 col_badge=" ${CLR_RED}[已停止]${CLR_RESET}"; elif [ "$st" = "启动异常" ]; then raw_badge=" [启动异常]"; col_badge=" ${CLR_RED}[启动异常]${CLR_RESET}"
-elif [ "$st" = "部分运行" ]; then raw_badge=" [部分运行]"; col_badge=" ${CLR_YELLOW}[部分运行]${CLR_RESET}"
+elif [ "$st" = "部分运行" ]; then raw_badge=" [部分运行]"; col_badge=" ${CLR_YELLOW}[部分运行]${CLR_RESET}"; elif [ "$st" = "状态未知" ]; then
+raw_badge=" [状态未知]"; col_badge=" ${CLR_YELLOW}[状态未知]${CLR_RESET}"
 fi
 local raw_tag=""; local tag_str=""
 if [ -n "$tag" ]; then
@@ -2934,7 +2986,11 @@ done
 ui_app_engine(){ local search_kw=""
 while true; do
 clear; app_cloud_fetch 2>/dev/null || true; local docker_snapshot=""
-command -v docker >/dev/null 2>&1 && docker_snapshot=$(docker ps -a --format '{{.Label "com.docker.compose.project"}}|{{.Names}}|{{.State}}' 2>/dev/null || true)
+if docker_is_installed; then
+if ! docker_snapshot=$(docker ps -a --format '{{.Label "com.docker.compose.project"}}|{{.Names}}|{{.State}}' 2>/dev/null); then
+docker_is_active && docker_snapshot="__DOCKER_ERR__" || docker_snapshot=""
+fi
+fi
 local catalog=()
 for c in $(app_cloud_list); do
 catalog+=("$c")
