@@ -65,14 +65,19 @@ All commands are non-interactive (except sec_gen_key, which is TTY-only), idempo
 - `vs docker_mirror_fast`: Apply verified domestic/fast Docker registry mirrors.
 
 ### 6. Application Market (`app_*`)
-- `vs app_install <id> [port]`: Deploy application from market template (e.g. `vs app_install npm 81`).
+- `vs app_install <id> [port] [host]`: Deploy application from market template (e.g. `vs app_install npm 81`) and auto-open all published compose ports when bound to `0.0.0.0`.
+- `vs app_port <id> <port>`: Change application host port, recreate container, and atomically sync firewall ports (auto-rolls back on Compose failure).
+- `vs app_host <id> <0.0.0.0|127.0.0.1|toggle>`: Switch application bind address (`0.0.0.0` public or `127.0.0.1` local proxy), recreate container, and atomically sync firewall ports.
 - `vs app_update <id>`: Pull latest image and recreate application container.
 - `vs app_restart <id>`: Restart application container.
 - `vs app_stop <id>`: Stop application container.
 - `vs app_start <id>`: Start application container.
 - `vs app_logs <id>`: View live logs of application.
-- `vs app_uninstall <id> [purge_data:0|1]`: Down container and optionally purge data directory (`/opt/vps-sh/apps/<id>`).
+- `vs app_uninstall <id> [purge_data:0|1]`: Down container, cleanly close unused firewall ports, and optionally purge data directory (`/opt/vps-sh/apps/<id>`).
 - Application Catalog Index: https://raw.githubusercontent.com/666OS/vps-apps/main/llms.txt
+
+### 7. Operations & Scheduling (`ops_*`)
+- `vs ops_cron_clear`: Remove all user crontab entries non-interactively.
 
 ## Safety Assertions & Guardrails
 - **Dual-Stack Firewall**: Inbound firewall rules synchronize across `iptables` (IPv4) and `ip6tables` (IPv6).

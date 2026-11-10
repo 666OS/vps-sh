@@ -18,7 +18,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="b92ff68"; VPS_BUILD_TIME="2026-11-10 12:17:17"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="0742abc"; VPS_BUILD_TIME="2026-11-10 12:36:46"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -91,7 +91,11 @@ printf "${CLR_BOLD}网络:${CLR_RESET}     IPv4: %s\n" "$ipv4"; printf "        
 sys_update(){ require_root; DEBIAN_FRONTEND=noninteractive apt-get update -y; DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
 DEBIAN_FRONTEND=noninteractive apt-get autoremove -y; DEBIAN_FRONTEND=noninteractive apt-get clean -y
 }
-sys_swap(){ require_root; local mb="${1:-2048}"; [ -f /swapfile ] && swapoff /swapfile 2>/dev/null || true; rm -f /swapfile
+sys_swap(){ require_root; local mb="${1:-2048}"
+if [[ ! "$mb" =~ ^[0-9]+$ ]] || [ "$mb" -lt 1 ]; then
+printf "${CLR_RED}错误: 虚拟内存大小无效 (正整数 MB)${CLR_RESET}\n" >&2; return 1
+fi
+[ -f /swapfile ] && swapoff /swapfile 2>/dev/null || true; rm -f /swapfile
 fallocate -l "${mb}M" /swapfile || dd if=/dev/zero of=/swapfile bs=1M count="$mb"; chmod 600 /swapfile; mkswap /swapfile; swapon /swapfile
 sed -i '/\/swapfile/d' /etc/fstab; echo "/swapfile swap swap defaults 0 0" >> /etc/fstab; sysctl -w vm.swappiness=10
 echo "vm.swappiness=10" > /etc/sysctl.d/99-swap.conf
@@ -111,8 +115,8 @@ else
 echo "127.0.1.1 $h" >> /etc/hosts
 fi
 }
-sys_hostname(){ require_root; local host="$1"
-if [ "${#host}" -gt 253 ] || [[ ! "$host" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
+sys_hostname(){ require_root; local host="${1:-}"
+if [ -z "$host" ] || [ "${#host}" -gt 253 ] || [[ ! "$host" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
 printf "${CLR_RED}错误: 主机名格式无效 (仅限字母数字及短横线)${CLR_RESET}\n" >&2; return 1
 fi
 hostnamectl set-hostname "$host" 2>/dev/null || { hostname "$host" 2>/dev/null || true; echo "$host" > /etc/hostname
@@ -190,7 +194,11 @@ clear; printf "${CLR_BOLD}--- 虚拟内存 (Swap) ---${CLR_RESET}\n"; printf "${
 printf "${CLR_CYAN}[1]${CLR_RESET} 配置 2GB\n"; printf "${CLR_CYAN}[2]${CLR_RESET} 配置 4GB\n"
 printf "${CLR_CYAN}[3]${CLR_RESET} 自定义大小 (MB)\n"; printf "${CLR_CYAN}[4]${CLR_RESET} 关闭并释放\n"; printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"
 read -r -p "请选择: " choice
-case "$choice" in 1) sys_swap 2048 ;; 2) sys_swap 4096 ;; 3) read -r -p "大小 (MB): " mb && sys_swap "$mb" ;; 4) sys_swap_off ;; 0|*) return ;; esac
+case "$choice" in
+1) sys_swap 2048 || true ;; 2) sys_swap 4096 || true ;;
+3)
+read -r -p "大小 (MB, 回车取消): " mb; [ -z "$mb" ] && continue; sys_swap "$mb" || true; ;; 4) sys_swap_off || true ;; 0|*) return ;;
+esac
 read -r -p "按回车返回..."
 done
 }
@@ -199,13 +207,17 @@ while true; do
 clear; printf "${CLR_BOLD}--- 系统时区 ---${CLR_RESET}\n"; printf "${CLR_DIM}当前时区:${CLR_RESET} %s\n\n" "$(sys_tz_snapshot)"
 printf "${CLR_CYAN}[1]${CLR_RESET} 设置为 Asia/Shanghai\n"; printf "${CLR_CYAN}[2]${CLR_RESET} 恢复为 UTC (默认)\n"
 printf "${CLR_CYAN}[3]${CLR_RESET} 自定义时区\n"; printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"; read -r -p "请选择: " choice
-case "$choice" in 1) sys_tz "Asia/Shanghai" ;; 2) sys_tz_utc ;; 3) read -r -p "时区 (如 America/New_York): " tz && sys_tz "$tz" ;; 0|*) return ;; esac
+case "$choice" in
+1) sys_tz "Asia/Shanghai" || true ;; 2) sys_tz_utc || true ;;
+3)
+read -r -p "时区 (如 America/New_York, 回车取消): " tz; [ -z "$tz" ] && continue; sys_tz "$tz" || true; ;; 0|*) return ;;
+esac
 read -r -p "按回车返回..."
 done
 }
 ui_sys_hostname(){ clear; local cur_host=$(hostname 2>/dev/null || uname -n); printf "${CLR_BOLD}--- 主机名称 ---${CLR_RESET}\n"
-printf "${CLR_DIM}当前主机名:${CLR_RESET} %s\n\n" "$cur_host"; read -r -p "新主机名 (回车取消): " host; [ -z "$host" ] && return 0; sys_hostname "$host"
-read -r -p "按回车返回..."
+printf "${CLR_DIM}当前主机名:${CLR_RESET} %s\n\n" "$cur_host"; read -r -p "新主机名 (回车取消): " host; [ -z "$host" ] && return 0
+sys_hostname "$host" || true; read -r -p "按回车返回..."
 }
 ui_sys_update(){ clear; local os=$(grep -oP '(?<=PRETTY_NAME=")[^"]*' /etc/os-release 2>/dev/null || uname -sr); local kernel=$(uname -r)
 local up_cnt=$(apt-get -s -o Debug::NoLocking=true upgrade 2>/dev/null | awk '/^[0-9]+ upgraded/ {print $1; exit}')
@@ -274,8 +286,23 @@ done
 }
 net_dns_snapshot(){ grep -E '^nameserver' /etc/resolv.conf 2>/dev/null || echo "无"
 }
-net_dns_set(){ require_root; chattr -i /etc/resolv.conf 2>/dev/null || true; local servers=("$@"); > /etc/resolv.conf
-for s in "${servers[@]}"; do
+net_dns_set(){ require_root
+if [ "$#" -eq 0 ]; then
+printf "${CLR_RED}错误: 请指定至少一个 DNS 服务器地址${CLR_RESET}\n" >&2; return 1
+fi
+local valid=() s
+for s in "$@"; do
+[ -n "$s" ] || continue
+if [[ ! "$s" =~ ^[0-9a-fA-F:\.]+$ ]]; then
+printf "${CLR_RED}错误: DNS 地址格式无效 (%s)${CLR_RESET}\n" "$s" >&2; return 1
+fi
+valid+=("$s")
+done
+if [ "${#valid[@]}" -eq 0 ]; then
+printf "${CLR_RED}错误: 请指定至少一个 DNS 服务器地址${CLR_RESET}\n" >&2; return 1
+fi
+chattr -i /etc/resolv.conf 2>/dev/null || true; : > /etc/resolv.conf
+for s in "${valid[@]}"; do
 echo "nameserver $s" >> /etc/resolv.conf
 done
 }
@@ -329,7 +356,12 @@ clear; printf "${CLR_BOLD}--- DNS 配置 ---${CLR_RESET}\n"; printf "${CLR_DIM}�
 printf "${CLR_CYAN}[1]${CLR_RESET} 国外双栈 (Cloudflare / Google)\n"; printf "${CLR_CYAN}[2]${CLR_RESET} 国内双栈 (Aliyun / DNSPod)\n"
 printf "${CLR_CYAN}[3]${CLR_RESET} 自定义 DNS\n"; printf "${CLR_CYAN}[4]${CLR_RESET} 恢复默认\n"; printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"
 read -r -p "请选择: " choice
-case "$choice" in 1) net_dns_foreign ;; 2) net_dns_domestic ;; 3) read -r -p "DNS 服务器 (空格隔开): " servers && net_dns_set $servers ;; 4) net_dns_restore ;; 0|*) return ;; esac
+case "$choice" in
+1) net_dns_foreign || true ;; 2) net_dns_domestic || true ;;
+3)
+read -r -p "DNS 服务器 (空格隔开, 回车取消): " servers; [ -z "${servers//[[:space:]]/}" ] && continue; net_dns_set $servers || true; ;;
+4) net_dns_restore || true ;; 0|*) return ;;
+esac
 read -r -p "按回车返回..."
 done
 }
@@ -512,7 +544,7 @@ fi
 printf "${CLR_RED}错误: SSH 服务应用或端口 %s 监听校验失败，已自动回滚${CLR_RESET}\n" "$port" >&2; return 1
 fi
 }
-sec_port(){ require_root; local port="$1"
+sec_port(){ require_root; local port="${1:-}"
 if [[ ! "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
 printf "${CLR_RED}错误: 端口无效 (1-65535)${CLR_RESET}\n" >&2; return 1
 fi
@@ -551,7 +583,11 @@ for u in $(sec_list_sudoers); do
 done
 return 1
 }
-sec_key(){ require_root; local key="$1"; local u="${2:-root}"; local h="/root"
+sec_key(){ require_root; local key="${1:-}"; local u="${2:-root}"
+if [ -z "$key" ]; then
+printf "${CLR_RED}错误: 请提供 SSH 公钥或 URL${CLR_RESET}\n" >&2; return 1
+fi
+local h="/root"
 if [ "$u" != "root" ]; then
 id "$u" >/dev/null 2>&1 || return 1; h="/home/$u"
 fi
@@ -633,7 +669,12 @@ sec_ssh_apply "$(sec_get_port)" "no" "$(sec_get_root_login)"
 }
 sec_unlock_pwd(){ require_root; sec_ssh_apply "$(sec_get_port)" "yes" "$(sec_get_root_login)"
 }
-sec_root_login(){ require_root; local mode="$1"
+sec_root_login(){ require_root; local mode="${1:-}"
+case "$mode" in
+no|yes|prohibit-password|without-password) ;;
+*)
+printf "${CLR_RED}错误: 参数无效，应为 no|prohibit-password|yes${CLR_RESET}\n" >&2; return 1; ;;
+esac
 if [ "$mode" = "no" ]; then
 local sudoers=$(sec_list_sudoers)
 if [ -z "$sudoers" ]; then
@@ -682,7 +723,7 @@ printf "${CLR_RED}错误: 密码不一致或为空${CLR_RESET}\n" >&2; return 1
 fi
 echo "$u:$p1" | chpasswd; printf "${CLR_GREEN}已更新用户 %s 密码${CLR_RESET}\n" "$u"
 }
-sec_user_add(){ require_root; local u="$1"; local pwd="${2:-}"
+sec_user_add(){ require_root; local u="${1:-}"; local pwd="${2:-}"
 if [[ ! "$u" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
 printf "${CLR_RED}错误: 用户名格式无效${CLR_RESET}\n" >&2; return 1
 fi
@@ -710,8 +751,11 @@ fi
 mkdir -p "/home/$u/.ssh"; chmod 700 "/home/$u/.ssh"; touch "/home/$u/.ssh/authorized_keys"; chmod 600 "/home/$u/.ssh/authorized_keys"
 chown -R "$u:$u" "/home/$u/.ssh"; printf "${CLR_GREEN}已创建 sudo 用户: %s${CLR_RESET}\n" "$u"
 }
-sec_user_del(){ require_root; local u="$1"
-if [ -z "$u" ] || [ "$u" = "root" ]; then
+sec_user_del(){ require_root; local u="${1:-}"
+if [ -z "$u" ]; then
+printf "${CLR_RED}错误: 请指定用户名${CLR_RESET}\n" >&2; return 1
+fi
+if [ "$u" = "root" ]; then
 printf "${CLR_RED}错误: 禁止删除 root${CLR_RESET}\n" >&2; return 1
 fi
 if [ "$u" = "${SUDO_USER:-}" ]; then
@@ -821,7 +865,11 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y fail2ban; sec_f2b_sync
 }
 sec_f2b(){ sec_f2b_install
 }
-sec_f2b_allow(){ require_root; mkdir -p /etc/fail2ban
+sec_f2b_allow(){ require_root
+if [ "$#" -eq 0 ]; then
+printf "${CLR_RED}错误: 请指定 IP/网段${CLR_RESET}\n" >&2; return 1
+fi
+mkdir -p /etc/fail2ban
 for ip in "$@"; do
 if [[ "$ip" =~ ^[0-9a-fA-F:\./]+$ ]]; then
 echo "$ip" >> /etc/fail2ban/whitelist.ips; fail2ban-client set sshd unbanip "$ip" 2>/dev/null || true
@@ -829,18 +877,28 @@ fi
 done
 sort -u /etc/fail2ban/whitelist.ips -o /etc/fail2ban/whitelist.ips 2>/dev/null || true; sec_f2b_sync
 }
-sec_f2b_disallow(){ require_root; [ -f /etc/fail2ban/whitelist.ips ] || return 0
+sec_f2b_disallow(){ require_root
+if [ "$#" -eq 0 ]; then
+printf "${CLR_RED}错误: 请指定 IP/网段${CLR_RESET}\n" >&2; return 1
+fi
+[ -f /etc/fail2ban/whitelist.ips ] || return 0
 for ip in "$@"; do
 local tmp=$(mktemp); grep -vFx "$ip" /etc/fail2ban/whitelist.ips > "$tmp" 2>/dev/null || true; mv "$tmp" /etc/fail2ban/whitelist.ips
 done
 sec_f2b_sync
 }
 sec_f2b_ban(){ require_root
+if [ "$#" -eq 0 ]; then
+printf "${CLR_RED}错误: 请指定 IP${CLR_RESET}\n" >&2; return 1
+fi
 for ip in "$@"; do
 fail2ban-client set sshd banip "$ip" || true
 done
 }
 sec_f2b_unban(){ require_root
+if [ "$#" -eq 0 ]; then
+printf "${CLR_RED}错误: 请指定 IP${CLR_RESET}\n" >&2; return 1
+fi
 for ip in "$@"; do
 fail2ban-client set sshd unbanip "$ip" || true
 done
@@ -871,7 +929,10 @@ while true; do
 clear; local cur_port=$(sec_get_port); printf "${CLR_BOLD}--- SSH 端口 ---${CLR_RESET}\n"
 printf "${CLR_DIM}当前端口:${CLR_RESET} %s\n\n" "$cur_port"; printf "${CLR_CYAN}[1]${CLR_RESET} 修改端口\n"
 printf "${CLR_CYAN}[2]${CLR_RESET} 恢复默认 (22)\n"; printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"; read -r -p "请选择: " choice
-case "$choice" in 1) read -r -p "端口 (1-65535): " p && sec_port "$p" ;; 2) sec_port_restore ;; 0|*) return ;; esac
+case "$choice" in
+1)
+read -r -p "端口 (1-65535, 回车取消): " p; [ -z "$p" ] && continue; sec_port "$p" || true; ;; 2) sec_port_restore || true ;; 0|*) return ;;
+esac
 read -r -p "按回车返回..."
 done
 }
@@ -880,7 +941,7 @@ while true; do
 clear; local pwd_status="允许密码登录"; [ "$(sec_get_pwd)" = "no" ] && pwd_status="已锁定 (仅限密钥)"; printf "${CLR_BOLD}--- 密码登录 ---${CLR_RESET}\n"
 printf "${CLR_DIM}当前状态:${CLR_RESET} %s\n\n" "$pwd_status"; printf "${CLR_CYAN}[1]${CLR_RESET} 禁用密码登录\n"
 printf "${CLR_CYAN}[2]${CLR_RESET} 允许密码登录\n"; printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"; read -r -p "请选择: " choice
-case "$choice" in 1) sec_lock_pwd ;; 2) sec_unlock_pwd ;; 0|*) return ;; esac
+case "$choice" in 1) sec_lock_pwd || true ;; 2) sec_unlock_pwd || true ;; 0|*) return ;; esac
 read -r -p "按回车返回..."
 done
 }
@@ -891,7 +952,7 @@ clear; local root_status=$(sec_get_root_login); local status_str="仅限密钥 (
 printf "${CLR_BOLD}--- Root 登录 ---${CLR_RESET}\n"; printf "${CLR_DIM}当前状态:${CLR_RESET} %s\n\n" "$status_str"
 printf "${CLR_CYAN}[1]${CLR_RESET} 禁止登录\n"; printf "${CLR_CYAN}[2]${CLR_RESET} 仅限密钥\n"; printf "${CLR_CYAN}[3]${CLR_RESET} 允许密码与密钥\n"
 printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"; read -r -p "请选择: " choice
-case "$choice" in 1) sec_root_login "no" ;; 2) sec_root_login "prohibit-password" ;; 3) sec_root_login "yes" ;; 0|*) return ;; esac
+case "$choice" in 1) sec_root_login "no" || true ;; 2) sec_root_login "prohibit-password" || true ;; 3) sec_root_login "yes" || true ;; 0|*) return ;; esac
 read -r -p "按回车返回..."
 done
 }
@@ -902,22 +963,25 @@ printf "${CLR_CYAN}[1]${CLR_RESET} 创建用户\n"; printf "${CLR_CYAN}[2]${CLR_
 printf "${CLR_CYAN}[4]${CLR_RESET} 删除用户\n"; printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"; read -r -p "请选择: " choice
 case "$choice" in
 1)
-read -r -p "用户名: " uname; [ -z "$uname" ] && continue; read -r -s -p "密码 (留空仅限密钥): " upass; echo; sec_user_add "$uname" "$upass"
+read -r -p "用户名 (回车取消): " uname; [ -z "$uname" ] && continue; read -r -s -p "密码 (留空仅限密钥): " upass; echo
+if sec_user_add "$uname" "$upass"; then
 if ! sec_has_keys "$uname"; then
 echo; printf "为 %s 配置 SSH 密钥:\n" "$uname"; printf "${CLR_CYAN}[1]${CLR_RESET} 导入公钥 (推荐)\n"; printf "${CLR_CYAN}[2]${CLR_RESET} 临时生成密钥对\n"
 printf "${CLR_DIM}[回车] 暂不配置${CLR_RESET}\n"; read -r -p "请选择: " key_choice
 case "$key_choice" in
 1)
-read -r -p "公钥内容 (文本或 GitHub .keys 链接): " key; [ -n "$key" ] && sec_key "$key" "$uname"; ;; 2) sec_gen_key "$uname" ;; *) ;;
+read -r -p "公钥内容 (文本或 GitHub .keys 链接, 回车取消): " key; [ -n "$key" ] && { sec_key "$key" "$uname" || true; }; ;;
+2) sec_gen_key "$uname" || true ;; *) ;;
 esac
+fi
 fi
 ;;
 2)
-read -r -p "用户名 (默认 root): " uname; sec_passwd "${uname:-root}"; ;;
+read -r -p "用户名 (默认 root): " uname; sec_passwd "${uname:-root}" || true; ;;
 3)
 read -r -p "用户名 (默认 root): " uname; ui_sec_key "${uname:-root}"; ;;
 4)
-read -r -p "删除用户名: " uname; [ -n "$uname" ] && sec_user_del "$uname"; ;; 0|*) return ;;
+read -r -p "删除用户名 (回车取消): " uname; [ -z "$uname" ] && continue; sec_user_del "$uname" || true; ;; 0|*) return ;;
 esac
 read -r -p "按回车返回..."
 done
@@ -931,12 +995,12 @@ printf "${CLR_CYAN}[2]${CLR_RESET} 临时生成密钥对 (内存即时生成，�
 printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"; read -r -p "请选择: " choice
 case "$choice" in
 1)
-local u="$target_user"; [ -z "$u" ] && read -r -p "用户名 (默认 root): " u; read -r -p "公钥内容 (文本或 GitHub .keys 链接): " key
-[ -n "$key" ] && sec_key "$key" "${u:-root}"; ;;
+local u="$target_user"; [ -z "$u" ] && read -r -p "用户名 (默认 root): " u; read -r -p "公钥内容 (文本或 GitHub .keys 链接, 回车取消): " key
+[ -z "$key" ] && continue; sec_key "$key" "${u:-root}" || true; ;;
 2)
-local u="$target_user"; [ -z "$u" ] && read -r -p "用户名 (默认 root): " u; sec_gen_key "${u:-root}"; ;;
+local u="$target_user"; [ -z "$u" ] && read -r -p "用户名 (默认 root): " u; sec_gen_key "${u:-root}" || true; ;;
 3)
-local u="$target_user"; [ -z "$u" ] && read -r -p "用户名 (直接回车扫描清除所有用户): " u; sec_clean_key "$u"; ;; 0|*) return ;;
+local u="$target_user"; [ -z "$u" ] && read -r -p "用户名 (直接回车扫描清除所有用户): " u; sec_clean_key "$u" || true; ;; 0|*) return ;;
 esac
 read -r -p "按回车返回..."
 done
@@ -965,7 +1029,7 @@ while true; do
 clear; printf "${CLR_BOLD}--- 防爆破 (Fail2ban) ---${CLR_RESET}\n\n"; sec_f2b_snapshot; echo
 if ! sec_f2b_is_installed; then
 printf "${CLR_CYAN}[1]${CLR_RESET} 安装并启用 Fail2ban\n"; printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"; read -r -p "请选择: " choice
-case "$choice" in 1) sec_f2b_install && read -r -p "按回车返回..." ;; 0|*) return ;; esac
+case "$choice" in 1) sec_f2b_install || true; read -r -p "按回车返回..." ;; 0|*) return ;; esac
 else
 local f2b_action="启动服务"; sec_f2b_is_active && f2b_action="停止服务"; printf "${CLR_CYAN}[1]${CLR_RESET} 同步配置并重启\n"
 printf "${CLR_CYAN}[2]${CLR_RESET} 解封 IP\n"; printf "${CLR_CYAN}[3]${CLR_RESET} 解封全部 IP\n"; printf "${CLR_CYAN}[4]${CLR_RESET} 添加白名单\n"
@@ -973,16 +1037,18 @@ printf "${CLR_CYAN}[5]${CLR_RESET} 移除白名单\n"; printf "${CLR_CYAN}[6]${C
 printf "${CLR_CYAN}[7]${CLR_RESET} %s\n" "$f2b_action"; printf "${CLR_CYAN}[8]${CLR_RESET} 卸载 Fail2ban\n"
 printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"; read -r -p "请选择: " choice
 case "$choice" in
-1) sec_f2b_sync && read -r -p "按回车返回..." ;;
+1) sec_f2b_sync || true; read -r -p "按回车返回..." ;;
 2)
 local cur_banned=$(fail2ban-client status sshd 2>/dev/null | awk '/Banned IP list:/ {sub(/.*Banned IP list:[[:space:]]*/, ""); print $0}')
-[ -n "$cur_banned" ] && printf "${CLR_DIM}当前封禁: %s${CLR_RESET}\n" "$cur_banned"
-read -r -p "解封 IP (空格隔开): " ips && [ -n "$ips" ] && sec_f2b_unban $ips && read -r -p "按回车返回..."; ;;
-3) sec_f2b_unban_all && read -r -p "按回车返回..." ;;
-4) read -r -p "加白 IP/网段: " ips && [ -n "$ips" ] && sec_f2b_allow $ips && read -r -p "按回车返回..." ;;
-5) read -r -p "移除白名单 IP: " ips && [ -n "$ips" ] && sec_f2b_disallow $ips && read -r -p "按回车返回..." ;;
-6) sec_f2b_log && echo && read -r -p "按回车返回..." ;; 7) sec_f2b_toggle && read -r -p "按回车返回..." ;;
-8) sec_f2b_uninstall && read -r -p "按回车返回..." ;; 0|*) return ;;
+[ -n "$cur_banned" ] && printf "${CLR_DIM}当前封禁: %s${CLR_RESET}\n" "$cur_banned"; read -r -p "解封 IP (空格隔开, 回车取消): " ips
+[ -z "${ips//[[:space:]]/}" ] && continue; sec_f2b_unban $ips || true; read -r -p "按回车返回..."; ;;
+3) sec_f2b_unban_all || true; read -r -p "按回车返回..." ;;
+4)
+read -r -p "加白 IP/网段 (回车取消): " ips; [ -z "${ips//[[:space:]]/}" ] && continue; sec_f2b_allow $ips || true; read -r -p "按回车返回..."; ;;
+5)
+read -r -p "移除白名单 IP (回车取消): " ips; [ -z "${ips//[[:space:]]/}" ] && continue; sec_f2b_disallow $ips || true; read -r -p "按回车返回..."; ;;
+6) sec_f2b_log || true; echo; read -r -p "按回车返回..." ;; 7) sec_f2b_toggle || true; read -r -p "按回车返回..." ;;
+8) sec_f2b_uninstall || true; read -r -p "按回车返回..." ;; 0|*) return ;;
 esac
 fi
 done
@@ -1021,15 +1087,21 @@ fw_sets(){ ipset create vps_whitelist hash:net -exist 2>/dev/null || true; ipset
 ipset create vps_whitelist6 hash:net family inet6 -exist 2>/dev/null || true
 ipset create vps_blacklist6 hash:net family inet6 -exist 2>/dev/null || true
 }
-fw_published_ports(){ local a p
+fw_published_ports(){ local a dir cf port host p
 for a in $(app_list_installed 2>/dev/null || true); do
-[ "$(app_get_host "$a" 2>/dev/null)" = "0.0.0.0" ] || continue; p=$(app_get_port "$a" 2>/dev/null || true)
-[[ "$p" =~ ^[0-9]+$ ]] && echo "$p"
+dir="/opt/vps-sh/apps/$a"; cf="$dir/compose.yaml"; [ -f "$cf" ] || cf="$dir/docker-compose.yml"; [ -f "$cf" ] || continue
+host=$(app_get_host "$a" 2>/dev/null || echo "0.0.0.0"); port=""
+if [ -f "$dir/.env" ]; then
+port=$(awk -F= '$1=="APP_PORT" {print $2; exit}' "$dir/.env" | tr -d " \"\047\r" || true)
+fi
+for p in $(app_get_ports "$cf" "$port" "$host" 2>/dev/null || true); do
+[[ "$p" =~ ^[0-9]+(:[0-9]+)?$ ]] && echo "$p"
+done
 done
 if command -v docker >/dev/null 2>&1; then
 docker ps --format '{{.Ports}}' 2>/dev/null | tr ',' '\n' | awk -F'->' '/->/ {
             h=$1; gsub(/ /, "", h); n=split(h, a, ":"); p=a[n]; sub(/:[^:]*$/, "", h)
-            if(h=="0.0.0.0" || h=="[::]" || h=="::") { gsub(/-/, ":", p); print p }
+            if(h=="0.0.0.0" || h=="[::]" || h=="::" || h=="") { gsub(/-/, ":", p); print p }
         }' || true
 fi
 }
@@ -1058,27 +1130,28 @@ fw_ready(){ fw_is_installed || { printf "${CLR_RED}错误: 未安装 iptables/ip
 }
 fw_conf_load || fw_migrate
 }
-fw_rules(){ local v="$1" s="" bl="vps_blacklist" wl="vps_whitelist" icmp="-p icmp --icmp-type" p; local ssh=$(sec_get_port)
+fw_rules(){ local v="${1:-4}" s="" bl="vps_blacklist" wl="vps_whitelist" icmp="-p icmp --icmp-type" p
+[ -n "${FW_MODE:-}" ] || fw_conf_load 2>/dev/null || true; local ssh=$(sec_get_port)
 [ "$v" = "6" ] && { s="6"; bl="vps_blacklist6"; wl="vps_whitelist6"; icmp="-p ipv6-icmp --icmpv6-type"; }
 local lim="-m hashlimit --hashlimit-above 500/s --hashlimit-burst 100 --hashlimit-mode srcip"
 printf '*filter\n:VPS-IN - [0:0]\n:VPS-DOCKER - [0:0]\n'
 printf -- '-A VPS-IN -i lo -j ACCEPT\n-A VPS-IN -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT\n'
-[ "$FW_DDOS" = "on" ] && printf -- '-A VPS-IN -p tcp --syn %s --hashlimit-name vps_syn%s -j DROP\n' "$lim" "$s"
-[ "$FW_PING" = "off" ] && printf -- '-A VPS-IN %s echo-request -j DROP\n' "$icmp"
+[ "${FW_DDOS:-off}" = "on" ] && printf -- '-A VPS-IN -p tcp --syn %s --hashlimit-name vps_syn%s -j DROP\n' "$lim" "$s"
+[ "${FW_PING:-on}" = "off" ] && printf -- '-A VPS-IN %s echo-request -j DROP\n' "$icmp"
 [ "$v" = "6" ] && printf -- '-A VPS-IN -p ipv6-icmp -j ACCEPT\n'
 printf -- '-A VPS-IN -m set --match-set %s src -j DROP\n-A VPS-IN -m set --match-set %s src -j ACCEPT\n' "$bl" "$wl"
 printf -- '-A VPS-IN -p tcp --dport %s -j ACCEPT\n' "$ssh"
-for p in $FW_PORTS; do
+for p in ${FW_PORTS:-}; do
 [[ "$p" =~ ^[0-9]+(:[0-9]+)?$ ]] || continue
 printf -- '-A VPS-IN -p tcp --dport %s -j ACCEPT\n-A VPS-IN -p udp --dport %s -j ACCEPT\n' "$p" "$p"
 done
 printf -- '-A VPS-DOCKER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN\n-A VPS-DOCKER -m conntrack ! --ctstate DNAT -j RETURN\n'
 printf -- '-A VPS-DOCKER -i docker0 -j RETURN\n-A VPS-DOCKER -i br-+ -j RETURN\n'
-[ "$FW_DDOS" = "on" ] && printf -- '-A VPS-DOCKER -p tcp --syn %s --hashlimit-name vps_dsyn%s -j DROP\n' "$lim" "$s"
+[ "${FW_DDOS:-off}" = "on" ] && printf -- '-A VPS-DOCKER -p tcp --syn %s --hashlimit-name vps_dsyn%s -j DROP\n' "$lim" "$s"
 printf -- '-A VPS-DOCKER -m set --match-set %s src -j DROP\n' "$bl"
-if [ "$FW_MODE" = "whitelist" ]; then
+if [ "${FW_MODE:-blacklist}" = "whitelist" ]; then
 printf -- '-A VPS-DOCKER -m set --match-set %s src -j RETURN\n' "$wl"
-for p in $FW_PORTS; do
+for p in ${FW_PORTS:-}; do
 [[ "$p" =~ ^[0-9]+(:[0-9]+)?$ ]] || continue
 printf -- '-A VPS-DOCKER -p tcp -m conntrack --ctorigdstport %s -j RETURN\n-A VPS-DOCKER -p udp -m conntrack --ctorigdstport %s -j RETURN\n' "$p" "$p"
 done
@@ -1227,7 +1300,11 @@ printf "%s\n" "$ipt_rules" | awk -v ssh="$ssh_port" '
     }'
 printf " %s\n\n" "----------------------------------------------------"
 }
-fw_open(){ require_root; fw_ready || return 1; local added=() p
+fw_open(){ require_root
+if [ "$#" -eq 0 ]; then
+printf "${CLR_RED}错误: 请指定端口${CLR_RESET}\n" >&2; return 1
+fi
+fw_ready || return 1; local added=() p
 for p in "$@"; do
 if [[ ! "$p" =~ ^[0-9]+(:[0-9]+)?$ ]]; then
 printf "${CLR_RED}错误: 端口格式无效 (%s)${CLR_RESET}\n" "$p" >&2; continue
@@ -1239,7 +1316,11 @@ if [ ${#added[@]} -gt 0 ]; then
 printf "${CLR_GREEN}已放行端口: %s${CLR_RESET}\n" "${added[*]}"
 fi
 }
-fw_close(){ require_root; fw_ready || return 1; local ssh_port=$(sec_get_port); local closed=() p q keep hit
+fw_close(){ require_root
+if [ "$#" -eq 0 ]; then
+printf "${CLR_RED}错误: 请指定端口${CLR_RESET}\n" >&2; return 1
+fi
+fw_ready || return 1; local ssh_port=$(sec_get_port); local closed=() p q keep hit
 for p in "$@"; do
 [ "$p" = "http" ] && p="80"; [ "$p" = "https" ] && p="443"
 if [ "$p" = "$ssh_port" ]; then
@@ -1272,7 +1353,11 @@ fw_valid_ip(){
 [[ "${1:-}" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(/[0-9]{1,2})?$ ]] || \
 [[ "${1:-}" =~ ^[0-9a-fA-F:]+(/[0-9]{1,3})?$ ]]
 }
-fw_ban_ip(){ require_root; fw_ready || return 1; fw_apply || return 1; local added=()
+fw_ban_ip(){ require_root
+if [ "$#" -eq 0 ]; then
+printf "${CLR_RED}错误: 请指定 IP/网段${CLR_RESET}\n" >&2; return 1
+fi
+fw_ready || return 1; fw_apply || return 1; local added=()
 for ip in "$@"; do
 if ! fw_valid_ip "$ip"; then
 printf "${CLR_RED}错误: IP/CIDR 格式无效 (%s)${CLR_RESET}\n" "$ip" >&2; continue
@@ -1291,7 +1376,11 @@ if [ ${#added[@]} -gt 0 ]; then
 printf "${CLR_GREEN}已加入黑名单: %s${CLR_RESET}\n" "${added[*]}"
 fi
 }
-fw_allow_ip(){ require_root; fw_ready || return 1; fw_apply || return 1; local added=()
+fw_allow_ip(){ require_root
+if [ "$#" -eq 0 ]; then
+printf "${CLR_RED}错误: 请指定 IP/网段${CLR_RESET}\n" >&2; return 1
+fi
+fw_ready || return 1; fw_apply || return 1; local added=()
 for ip in "$@"; do
 if ! fw_valid_ip "$ip"; then
 printf "${CLR_RED}错误: IP/CIDR 格式无效 (%s)${CLR_RESET}\n" "$ip" >&2; continue
@@ -1310,7 +1399,11 @@ if [ ${#added[@]} -gt 0 ]; then
 printf "${CLR_GREEN}已加入白名单: %s${CLR_RESET}\n" "${added[*]}"
 fi
 }
-fw_unban_ip(){ require_root; fw_ready || return 1; fw_apply || return 1; local removed=()
+fw_unban_ip(){ require_root
+if [ "$#" -eq 0 ]; then
+printf "${CLR_RED}错误: 请指定 IP/网段${CLR_RESET}\n" >&2; return 1
+fi
+fw_ready || return 1; fw_apply || return 1; local removed=()
 for ip in "$@"; do
 if ! fw_valid_ip "$ip"; then
 printf "${CLR_RED}错误: IP/CIDR 格式无效 (%s)${CLR_RESET}\n" "$ip" >&2; continue
@@ -1357,10 +1450,10 @@ clear; printf "${CLR_BOLD}--- 防火墙 (iptables) ---${CLR_RESET}\n\n"; fw_snap
 if [ -n "$conflict" ]; then
 local cname="UFW"; [ "$conflict" = "firewalld" ] && cname="Firewalld"; printf "${CLR_YELLOW}冲突: %s 正在运行${CLR_RESET}\n\n" "$cname"
 printf "${CLR_CYAN}[1]${CLR_RESET} 停用 %s 并接管\n" "$cname"; printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"; read -r -p "请选择: " choice
-case "$choice" in 1) fw_resolve_conflict && read -r -p "按回车返回..." ;; 0|*) return ;; esac
+case "$choice" in 1) fw_resolve_conflict || true; read -r -p "按回车返回..." ;; 0|*) return ;; esac
 elif ! fw_is_installed || ! fw_is_initialized; then printf "${CLR_CYAN}[1]${CLR_RESET} 初始化防火墙\n"; printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"
 read -r -p "请选择: " choice
-case "$choice" in 1) fw_install && read -r -p "按回车返回..." ;; 0|*) return ;; esac
+case "$choice" in 1) fw_install || true; read -r -p "按回车返回..." ;; 0|*) return ;; esac
 else
 local ping_action="禁 Ping: 开启"; [ "$(fw_get_ping)" = "drop" ] && ping_action="禁 Ping: 关闭"; local ddos_action="防 DDoS 限流: 开启"
 [ "$(fw_get_ddos)" = "on" ] && ddos_action="防 DDoS 限流: 关闭"; printf "${CLR_CYAN}[1]${CLR_RESET} 放行端口\n"
@@ -1371,7 +1464,7 @@ printf "${CLR_CYAN}[8]${CLR_RESET} %s\n" "$ping_action"; printf "${CLR_CYAN}[9]$
 printf "${CLR_CYAN}[10]${CLR_RESET} 重置规则\n"; printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"; read -r -p "请选择: " choice
 case "$choice" in
 1)
-read -r -p "放行端口 (空格隔开/如 80 443 1000:2000, 回车取消): " port; [ -z "$port" ] && continue; fw_open $port; ;;
+read -r -p "放行端口 (空格隔开/如 80 443 1000:2000, 回车取消): " port; [ -z "${port//[[:space:]]/}" ] && continue; fw_open $port || true; ;;
 2)
 local ssh_port=$(sec_get_port); local open_ports=""
 if [ -f "$VPS_FW_CONF" ]; then
@@ -1393,13 +1486,14 @@ fi
 if [ -z "$open_ports" ]; then
 printf "${CLR_YELLOW}当前无自定义开放端口 (SSH: %s 保护中禁止关闭)${CLR_RESET}\n" "$ssh_port"
 else
-printf "${CLR_DIM}可关闭端口: %s${CLR_RESET}\n" "$open_ports"; read -r -p "关闭端口 (空格隔开, 回车取消): " port; [ -z "$port" ] && continue; fw_close $port
+printf "${CLR_DIM}可关闭端口: %s${CLR_RESET}\n" "$open_ports"; read -r -p "关闭端口 (空格隔开, 回车取消): " port; [ -z "${port//[[:space:]]/}" ] && continue
+fw_close $port || true
 fi
-;; 3) fw_open_all ;; 4) fw_close_all ;;
+;; 3) fw_open_all || true ;; 4) fw_close_all || true ;;
 5)
-read -r -p "封禁 IP/网段 (空格隔开, 回车取消): " ip; [ -z "$ip" ] && continue; fw_ban_ip $ip; ;;
+read -r -p "封禁 IP/网段 (空格隔开, 回车取消): " ip; [ -z "${ip//[[:space:]]/}" ] && continue; fw_ban_ip $ip || true; ;;
 6)
-read -r -p "放行 IP/网段 (空格隔开, 回车取消): " ip; [ -z "$ip" ] && continue; fw_allow_ip $ip; ;;
+read -r -p "放行 IP/网段 (空格隔开, 回车取消): " ip; [ -z "${ip//[[:space:]]/}" ] && continue; fw_allow_ip $ip || true; ;;
 7)
 local b_ips=$( (ipset list vps_blacklist 2>/dev/null || true; ipset list vps_blacklist6 2>/dev/null || true) | awk '/^Members:/ {m=1; next} m && NF {printf "%s ", $1}')
 local w_ips=$( (ipset list vps_whitelist 2>/dev/null || true; ipset list vps_whitelist6 2>/dev/null || true) | awk '/^Members:/ {m=1; next} m && NF {printf "%s ", $1}')
@@ -1409,13 +1503,13 @@ printf "${CLR_DIM}当前无任何手动黑/白名单 IP${CLR_RESET}\n"
 else
 [ -n "$b_ips" ] && printf "  ${CLR_RED}[黑名单]${CLR_RESET} %s\n" "$b_ips"
 [ -n "$w_ips" ] && printf "  ${CLR_GREEN}[白名单]${CLR_RESET} %s\n" "$w_ips"; read -r -p "移除 IP/网段 (空格隔开, 回车取消): " ip
-[ -z "$ip" ] && continue; fw_unban_ip $ip
+[ -z "${ip//[[:space:]]/}" ] && continue; fw_unban_ip $ip || true
 fi
-;; 8) fw_ping toggle; continue ;; 9) fw_ddos toggle; continue ;;
+;; 8) fw_ping toggle || true; continue ;; 9) fw_ddos toggle || true; continue ;;
 10)
 read -r -p "确认重置所有防火墙规则至初始状态? (y/N, 回车取消): " confirm
 case "$confirm" in
-[yY][eE][sS]|[yY]) fw_reset ;; *) continue ;;
+[yY][eE][sS]|[yY]) fw_reset || true ;; *) continue ;;
 esac
 ;; 0|*) return ;;
 esac
@@ -1482,6 +1576,8 @@ if [ -n "$sys_files" ]; then
 printf "${CLR_BOLD}[系统任务 (/etc/cron.d)]${CLR_RESET}\n"; echo "$sys_files" | sed 's/^/  • /'
 fi
 fi
+}
+ops_cron_clear(){ require_root; crontab -r 2>/dev/null || true; printf "${CLR_GREEN}已清空用户定时任务${CLR_RESET}\n"
 }
 ops_clean(){ require_root; local aggressive=0
 if [ "${1:-}" = "--aggressive" ] || [ "${1:-}" = "-a" ]; then
@@ -1599,9 +1695,9 @@ printf "${CLR_DIM}临时文件:${CLR_RESET} %s\n\n" "${tmp_size:-0B}"; printf "$
 printf "${CLR_CYAN}[2]${CLR_RESET} 深度清理 (压缩至 50M，清空旧归档)\n"; printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"; read -r -p "请选择: " choice
 case "$choice" in
 1)
-echo; ops_clean; echo; ;;
+echo; ops_clean || true; echo; ;;
 2)
-echo; ops_clean --aggressive; echo; ;;
+echo; ops_clean --aggressive || true; echo; ;;
 0|*)
 return 0; ;;
 esac
@@ -1637,7 +1733,7 @@ crontab -e; ;;
 read -r -p "确认清空用户定时任务? (y/N, 回车取消): " confirm
 case "$confirm" in
 [yY][eE][sS]|[yY])
-crontab -r 2>/dev/null || true; printf "${CLR_GREEN}已清空用户定时任务${CLR_RESET}\n"; read -r -p "按回车返回..."; ;;
+ops_cron_clear || true; read -r -p "按回车返回..."; ;;
 esac
 ;; 0|*) return 0 ;;
 esac
@@ -1657,7 +1753,7 @@ clear; printf "${CLR_BOLD}--- 脚本管理 ---${CLR_RESET}\n\n"
 printf "${CLR_DIM}当前版本:${CLR_RESET} %s (构建于 %s)%s\n\n" "$VPS_VERSION" "$VPS_BUILD_TIME" "$(ops_update_badge)"
 printf "${CLR_CYAN}[1]${CLR_RESET} 升级脚本\n"; printf "${CLR_CYAN}[2]${CLR_RESET} 卸载脚本\n"; printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"
 read -r -p "请选择: " choice
-case "$choice" in 1) ops_update && read -r -p "按回车返回..." ;; 2) sys_uninstall ;; 0|*) return ;; esac
+case "$choice" in 1) ops_update || true; read -r -p "按回车返回..." ;; 2) sys_uninstall || true ;; 0|*) return ;; esac
 done
 }
 vs_help(){
@@ -1830,7 +1926,7 @@ printf " - System: vs sys_swap <mb> | vs sys_tune | vs sys_clean\n"
 printf " - Network: vs net_dns_foreign | vs net_dns_china | vs net_prio_v4 | vs net_prio_v6\n"
 printf " - Security: vs sec_port <port> | vs sec_lock_pwd | vs sec_unlock_pwd | vs sec_lock_root | vs sec_root_keyonly | vs sec_unlock_root | vs sec_key <key> | vs sec_clean_key\n"
 printf " - Firewall: vs fw_open <port...> | vs fw_close <port...> | vs fw_ban_ip <ip> | vs fw_unban_ip <ip> | vs fw_allow_ip <ip> | vs fw_open_all | vs fw_close_all\n"
-printf " - Docker & Apps: vs docker_install | vs docker_cleanup | vs app_install <id> [port] | vs app_update <id>\n"
+printf " - Docker & Apps: vs docker_install | vs docker_cleanup | vs app_install <id> [port] | vs app_port <id> <port> | vs app_host <id> <0.0.0.0|127.0.0.1> | vs app_update <id>\n"
 printf " - Catalog: https://raw.githubusercontent.com/666OS/vps-apps/main/llms.txt\n"
 fi
 }
@@ -1899,7 +1995,11 @@ echo "Docker 守护进程未运行"; return 0
 fi
 docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Image}}\t{{.Ports}}"
 }
-docker_mirror(){ require_root; local mirrors=("$@"); [ "${#mirrors[@]}" -gt 0 ] || return 0
+docker_mirror(){ require_root
+if [ "$#" -eq 0 ]; then
+printf "${CLR_RED}错误: 请指定至少一个镜像地址${CLR_RESET}\n" >&2; return 1
+fi
+local mirrors=("$@")
 for m in "${mirrors[@]}"; do
 if [[ ! "$m" =~ ^https?://[a-zA-Z0-9.-]+(:[0-9]+)?(/.*)?$ ]]; then
 printf "${CLR_RED}错误: 源格式不合法 (%s)${CLR_RESET}\n" "$m" >&2; return 1
@@ -1938,7 +2038,7 @@ docker_mirror_daocloud(){ docker_mirror "https://docker.m.daocloud.io"
 }
 docker_mirror_1ms(){ docker_mirror "https://docker.1ms.run"
 }
-docker_probe_status(){ local url="${1%/}"
+docker_probe_status(){ local url="${1:-}"; [ -n "$url" ] || return 0; url="${url%/}"
 local res=$(curl -s -m 1.5 -o /dev/null -w "%{http_code}:%{time_connect}" "$url/v2/" 2>/dev/null); res="${res:-000:0}"
 local code="${res%%:*}"; local time_sec="${res##*:}"
 if [ "$code" = "200" ] || [ "$code" = "401" ]; then
@@ -2006,7 +2106,12 @@ printf "${CLR_DIM}当前镜像源:${CLR_RESET} %s %s\n\n" "$mirror" "$stat_cur";
 printf "${CLR_CYAN}[2]${CLR_RESET} DaoCloud 源 %s\n" "$stat_dao"; printf "${CLR_CYAN}[3]${CLR_RESET} 1ms 毫秒源 %s\n" "$stat_1ms"
 printf "${CLR_CYAN}[4]${CLR_RESET} 自定义源\n"; printf "${CLR_CYAN}[5]${CLR_RESET} 恢复官方源\n"; printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"
 read -r -p "请选择: " choice
-case "$choice" in 1) docker_mirror_fast ;; 2) docker_mirror_daocloud ;; 3) docker_mirror_1ms ;; 4) read -r -p "镜像地址 (如 https://docker.m.daocloud.io): " m && [ -n "$m" ] && docker_mirror "$m" ;; 5) docker_mirror_restore ;; 0|*) return ;; esac
+case "$choice" in
+1) docker_mirror_fast || true ;; 2) docker_mirror_daocloud || true ;; 3) docker_mirror_1ms || true ;;
+4)
+read -r -p "镜像地址 (如 https://docker.m.daocloud.io, 回车取消): " m; [ -z "${m//[[:space:]]/}" ] && continue; docker_mirror $m || true; ;;
+5) docker_mirror_restore || true ;; 0|*) return ;;
+esac
 read -r -p "按回车返回..."
 done
 }
@@ -2055,19 +2160,19 @@ else
 target_name="$target_idx"
 fi
 case "$act" in
-1) docker start "$target_name" ;; 2) docker stop "$target_name" ;; 3) docker restart "$target_name" ;;
+1) docker start "$target_name" || true ;; 2) docker stop "$target_name" || true ;; 3) docker restart "$target_name" || true ;;
 4)
-read -r -p "确认删除容器 $target_name? (y/N): " confirm
+read -r -p "确认删除容器 $target_name? (y/N, 回车取消): " confirm
 case "$confirm" in
-[yY][eE][sS]|[yY]) docker rm -f "$target_name" ;; *) echo "已取消" ;;
+[yY][eE][sS]|[yY]) docker rm -f "$target_name" || true ;; *) continue ;;
 esac
 ;;
 5)
 clear; printf "${CLR_BOLD}--- 容器日志: %s ---${CLR_RESET}\n\n" "$target_name"
-docker logs --tail 100 -f "$target_name" 2>&1 || docker logs --tail 100 "$target_name"; ;;
+docker logs --tail 100 -f "$target_name" 2>&1 || docker logs --tail 100 "$target_name" || true; ;;
 6)
 printf "${CLR_BOLD}正在进入 %s 终端 (exit 退出)...${CLR_RESET}\n" "$target_name"
-docker exec -it "$target_name" /bin/bash 2>/dev/null || docker exec -it "$target_name" /bin/sh 2>/dev/null || docker exec -it "$target_name" sh
+docker exec -it "$target_name" /bin/bash 2>/dev/null || docker exec -it "$target_name" /bin/sh 2>/dev/null || docker exec -it "$target_name" sh || true
 ;;
 esac
 read -r -p "按回车返回..."; ;;
@@ -2106,22 +2211,34 @@ app_init_dir(){ [ -d /opt/vps-sh/apps ] || mkdir -p /opt/vps-sh/apps; chmod 700 
 }
 app_valid_name(){ [[ "${1:-}" =~ ^[a-zA-Z0-9_-]+$ ]]
 }
-app_port_in_use(){ local port="$1"; [ -n "$port" ] || return 1
-ss -H -lntu 2>/dev/null | awk -v p=":$port" '$5 ~ (p "$") { found=1 } END { exit(found ? 0 : 1) }'
+app_port_in_use(){ local port="${1:-}"; [ -n "$port" ] || return 1; local ss_out=""; ss_out=$(ss -H -lntu 2>/dev/null || true)
+[ -n "$ss_out" ] || return 1
+awk -v p="$port" '
+    BEGIN {
+        if (index(p, ":") > 0) { split(p, r, ":"); lo = r[1] + 0; hi = r[2] + 0 }
+        else { lo = p + 0; hi = lo }
+    }
+    {
+        n = split($5, a, ":")
+        lp = a[n] + 0
+        if (lp > 0 && lp >= lo && lp <= hi) found = 1
+    }
+    END { exit(found ? 0 : 1) }
+    ' <<< "$ss_out"
 }
-app_start(){ app_valid_name "$1" || return 1; local dir="/opt/vps-sh/apps/$1"; [ -d "$dir" ] || return 1
+app_start(){ local name="${1:-}"; app_valid_name "$name" || return 1; local dir="/opt/vps-sh/apps/$name"; [ -d "$dir" ] || return 1
 (cd "$dir" && docker compose up -d)
 }
-app_stop(){ app_valid_name "$1" || return 1; local dir="/opt/vps-sh/apps/$1"; [ -d "$dir" ] || return 1
+app_stop(){ local name="${1:-}"; app_valid_name "$name" || return 1; local dir="/opt/vps-sh/apps/$name"; [ -d "$dir" ] || return 1
 (cd "$dir" && docker compose stop)
 }
-app_restart(){ app_valid_name "$1" || return 1; local dir="/opt/vps-sh/apps/$1"; [ -d "$dir" ] || return 1
+app_restart(){ local name="${1:-}"; app_valid_name "$name" || return 1; local dir="/opt/vps-sh/apps/$name"; [ -d "$dir" ] || return 1
 (cd "$dir" && docker compose up -d --force-recreate)
 }
-app_update(){ app_valid_name "$1" || return 1; local dir="/opt/vps-sh/apps/$1"; [ -d "$dir" ] || return 1
+app_update(){ local name="${1:-}"; app_valid_name "$name" || return 1; local dir="/opt/vps-sh/apps/$name"; [ -d "$dir" ] || return 1
 (cd "$dir" && docker compose pull && docker compose up -d)
 }
-app_logs(){ app_valid_name "$1" || return 1; local dir="/opt/vps-sh/apps/$1"; [ -d "$dir" ] || return 1
+app_logs(){ local name="${1:-}"; app_valid_name "$name" || return 1; local dir="/opt/vps-sh/apps/$name"; [ -d "$dir" ] || return 1
 (cd "$dir" && (docker compose logs --tail 100 -f || docker compose logs --tail 100))
 }
 app_list_installed(){ local dir="/opt/vps-sh/apps"; [ -d "$dir" ] || return 0; local d
@@ -2132,7 +2249,7 @@ basename "$d"
 fi
 done
 }
-app_status(){ local name="$1"; local snapshot="${2:-}"; app_valid_name "$name" || { echo "未安装"; return 0; }
+app_status(){ local name="${1:-}"; local snapshot="${2:-}"; app_valid_name "$name" || { echo "未安装"; return 0; }
 local dir="/opt/vps-sh/apps/$name"
 if [ ! -d "$dir" ] || { [ ! -f "$dir/compose.yaml" ] && [ ! -f "$dir/docker-compose.yml" ]; }; then
 echo "未安装"; return 0
@@ -2158,9 +2275,9 @@ else
 echo "部分运行"
 fi
 }
-app_get_port(){ local name="$1"; app_valid_name "$name" || { echo "-"; return 0; }; local env_file="/opt/vps-sh/apps/$name/.env"
+app_get_port(){ local name="${1:-}"; app_valid_name "$name" || { echo "-"; return 0; }; local env_file="/opt/vps-sh/apps/$name/.env"
 if [ -f "$env_file" ]; then
-local p=$(awk -F= '$1=="APP_PORT" {print $2; exit}' "$env_file" | tr -d ' "\r'); [ -n "$p" ] && { echo "$p"; return 0; }
+local p=$(awk -F= '$1=="APP_PORT" {print $2; exit}' "$env_file" | tr -d " \"\047\r"); [ -n "$p" ] && { echo "$p"; return 0; }
 fi
 local meta=$(app_meta "$name" 2>/dev/null || true)
 if [ -n "$meta" ]; then
@@ -2173,11 +2290,150 @@ local p=$(awk '/:[0-9]+/ && match($0, /[0-9]+(\}:|:)[0-9]+/) { s=substr($0, RSTA
 fi
 echo "-"
 }
-app_get_host(){ local name="$1"; app_valid_name "$name" || { echo "0.0.0.0"; return 0; }; local env_file="/opt/vps-sh/apps/$name/.env"
+app_get_host(){ local name="${1:-}"; app_valid_name "$name" || { echo "0.0.0.0"; return 0; }; local env_file="/opt/vps-sh/apps/$name/.env"
 if [ -f "$env_file" ]; then
-local h=$(awk -F= '$1=="APP_HOST" {print $2; exit}' "$env_file" | tr -d ' "\r'); [ -n "$h" ] && { echo "$h"; return 0; }
+local h=$(awk -F= '$1=="APP_HOST" {print $2; exit}' "$env_file" | tr -d " \"\047\r"); [ -n "$h" ] && { echo "$h"; return 0; }
 fi
 echo "0.0.0.0"
+}
+app_get_ports(){ local compose="${1:-}" app_port="${2:-}" app_host="${3:-}"; [ -f "$compose" ] || return 0
+awk -v app_port="$app_port" -v app_host="$app_host" '
+    BEGIN {
+        if (app_port == "-") app_port = ""
+    }
+    function subst_var(s, vname, val,   pat, i, j, pos, pre, rest, inner, after, defv, rep, nextch) {
+        pat = "${" vname
+        pos = 1
+        while ((i = index(substr(s, pos), pat)) > 0) {
+            i += pos - 1
+            pre = substr(s, 1, i - 1)
+            rest = substr(s, i + length(pat))
+            nextch = substr(rest, 1, 1)
+            if (nextch != "}" && nextch != ":" && nextch != "-") {
+                pos = i + length(pat)
+                continue
+            }
+            j = index(rest, "}")
+            if (j == 0) break
+            inner = substr(rest, 1, j - 1)
+            after = substr(rest, j + 1)
+            if (inner == "") {
+                rep = (val != "" ? val : (vname == "APP_HOST" ? "0.0.0.0" : ""))
+            } else if (substr(inner, 1, 2) == ":-") {
+                defv = substr(inner, 3)
+                rep = (val != "" ? val : defv)
+            } else if (substr(inner, 1, 1) == "-") {
+                defv = substr(inner, 2)
+                rep = (val != "" ? val : defv)
+            } else {
+                pos = i + length(pat)
+                continue
+            }
+            s = pre rep after
+            pos = length(pre rep) + 1
+        }
+        pat = "$" vname
+        pos = 1
+        while ((i = index(substr(s, pos), pat)) > 0) {
+            i += pos - 1
+            nextch = substr(s, i + length(pat), 1)
+            if (nextch ~ /[A-Za-z0-9_]/) {
+                pos = i + length(pat)
+                continue
+            }
+            pre = substr(s, 1, i - 1)
+            after = substr(s, i + length(pat))
+            rep = (val != "" ? val : (vname == "APP_HOST" ? "0.0.0.0" : ""))
+            s = pre rep after
+            pos = length(pre rep) + 1
+        }
+        return s
+    }
+    function valid_port(p,   a) {
+        if (p ~ /^[0-9]+$/) return (p + 0 >= 1 && p + 0 <= 65535)
+        if (p ~ /^[0-9]+:[0-9]+$/) {
+            split(p, a, ":")
+            return (a[1] + 0 >= 1 && a[1] + 0 <= a[2] + 0 && a[2] + 0 <= 65535)
+        }
+        return 0
+    }
+    function handle_spec(raw,   rb, rest, n, parts, pparts, h, hp, i) {
+        sub(/#.*$/, "", raw)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", raw)
+        gsub(/["\047]/, "", raw)
+        if (raw == "") return
+        raw = subst_var(raw, "APP_HOST", app_host)
+        raw = subst_var(raw, "APP_PORT", app_port)
+        sub(/\/(tcp|udp|sctp)$/, "", raw)
+        h = ""; hp = ""
+        if (substr(raw, 1, 1) == "[") {
+            rb = index(raw, "]")
+            if (rb == 0) return
+            h = substr(raw, 1, rb)
+            rest = substr(raw, rb + 1)
+            if (substr(rest, 1, 1) != ":") return
+            rest = substr(rest, 2)
+            if (split(rest, pparts, ":") < 2) return
+            hp = pparts[1]
+        } else {
+            n = split(raw, parts, ":")
+            if (n < 2) return
+            if (n == 2) {
+                h = ""
+                hp = parts[1]
+            } else if (n == 3) {
+                h = parts[1]
+                hp = parts[2]
+            } else {
+                hp = parts[n - 1]
+                for (i = 1; i <= n - 2; i++) h = (i == 1 ? parts[i] : h ":" parts[i])
+            }
+        }
+        if (h ~ /^127\./ || h == "::1" || h == "[::1]" || h == "localhost") return
+        gsub(/-/, ":", hp)
+        if (valid_port(hp) && !seen[hp]++) {
+            out = (out ? out " " : "") hp
+        }
+    }
+    {
+        line = $0
+        sub(/\r$/, "", line)
+        if (line ~ /^[[:space:]]*(#.*)?$/) next
+        match(line, /^[[:space:]]*/)
+        cur = RLENGTH
+        trimmed = substr(line, cur + 1)
+        if (in_ports) {
+            if (substr(trimmed, 1, 1) == "-") {
+                if (cur < ports_col) {
+                    in_ports = 0
+                } else {
+                    item = substr(trimmed, 2)
+                    if (item == "" || item ~ /^[[:space:]]/) {
+                        handle_spec(item)
+                    }
+                    next
+                }
+            } else if (cur <= ports_col) {
+                in_ports = 0
+            } else {
+                next
+            }
+        }
+        if (trimmed ~ /^ports:[[:space:]]*(\[.*\])?[[:space:]]*(#.*)?$/) {
+            if (match(trimmed, /^ports:[[:space:]]*\[.*\]/)) {
+                flow = trimmed
+                sub(/^ports:[[:space:]]*\[/, "", flow)
+                sub(/\][[:space:]]*(#.*)?$/, "", flow)
+                nf = split(flow, fparts, ",")
+                for (i = 1; i <= nf; i++) handle_spec(fparts[i])
+            } else {
+                in_ports = 1
+                ports_col = cur
+            }
+        }
+    }
+    END { print out }
+    ' "$compose"
 }
 app_cloud_fetch(){ local cache="${VPS_CACHE_DIR:-/tmp}/catalog.json"; local now=$(date +%s); local mtime=0
 [ -f "$cache" ] && mtime=$(stat -c %Y "$cache" 2>/dev/null || stat -f %m "$cache" 2>/dev/null || echo 0)
@@ -2191,10 +2447,10 @@ rm -f "$cache.tmp" 2>/dev/null || true; return 1
 }
 app_cloud_list(){ local cache="${VPS_CACHE_DIR:-/tmp}/catalog.json"; [ -s "$cache" ] || return 0; awk -F'"' '/"id":/{print $4}' "$cache"
 }
-app_cloud_compose(){ local name="$1"; app_valid_name "$name" || return 1; command -v curl >/dev/null 2>&1 || return 1
+app_cloud_compose(){ local name="${1:-}"; app_valid_name "$name" || return 1; command -v curl >/dev/null 2>&1 || return 1
 curl -fsSLm 10 "$VPS_APP_FEED/apps/$name/compose.yaml"
 }
-app_meta(){ local name="$1"; app_valid_name "$name" || return 1; local cache="${VPS_CACHE_DIR:-/tmp}/catalog.json"
+app_meta(){ local name="${1:-}"; app_valid_name "$name" || return 1; local cache="${VPS_CACHE_DIR:-/tmp}/catalog.json"
 if [ -s "$cache" ]; then
 local entry=$(awk -F'"' -v target="$name" '
         /"id":/ { id=$4; title=""; port=""; tag=""; desc=""; auth=""; url="" }
@@ -2259,7 +2515,7 @@ fi
 fi
 return 1
 }
-app_get_auth(){ local name="$1"; app_valid_name "$name" || return 0; local env_file="/opt/vps-sh/apps/$name/.env"
+app_get_auth(){ local name="${1:-}"; app_valid_name "$name" || return 0; local env_file="/opt/vps-sh/apps/$name/.env"
 if [ -f "$env_file" ]; then
 local user=$(awk -F= '$1=="APP_USER" {print $2; exit}' "$env_file" | tr -d ' "\r')
 local pass=$(awk -F= '$1=="APP_PASSWORD" {print $2; exit}' "$env_file" | tr -d ' "\r')
@@ -2273,7 +2529,124 @@ local a=$(echo "$meta" | cut -d'|' -f5); [ -n "$a" ] && { echo "$a"; return 0; }
 fi
 echo ""
 }
-app_install(){ require_root; local name="$1"; local port="${2:-}"; local host="${3:-0.0.0.0}"; [ "$host" = "127.0.0.1" ] || host="0.0.0.0"
+_app_env_set(){ local dir="$1" key="$2" val="$3"; local env_file="$dir/.env"; local tmp_env
+tmp_env=$(mktemp "$dir/.env.XXXXXX") || return 1; chmod 600 "$tmp_env"
+if [ -f "$env_file" ]; then
+awk -F= -v k="$key" '$1 != k {print}' "$env_file" > "$tmp_env" 2>/dev/null || true
+fi
+printf '%s=%s\n' "$key" "$val" >> "$tmp_env"; mv -f "$tmp_env" "$env_file"; chmod 600 "$env_file"
+}
+_app_fw_sync(){ local old_ports="${1:-}" new_ports="${2:-}"; fw_is_initialized 2>/dev/null || return 0; local keep_pub=""
+if [ -n "$old_ports" ]; then
+keep_pub=" $(fw_published_ports 2>/dev/null | tr '\n' ' ' || true) "
+fi
+local to_close=() to_open=() p
+for p in $old_ports; do
+case " $new_ports " in *" $p "*) continue ;; esac
+case "$keep_pub" in *" $p "*) continue ;; esac
+to_close+=("$p")
+done
+local cur_fw_ports="" have_conf=0
+if [ -f "${VPS_FW_CONF:-/etc/vps-sh/fw.conf}" ]; then
+local FW_MODE FW_PORTS FW_PING FW_DDOS
+if fw_conf_load 2>/dev/null; then
+have_conf=1; cur_fw_ports=" $FW_PORTS "
+fi
+fi
+for p in $new_ports; do
+if [ "$have_conf" -eq 1 ]; then
+case "$cur_fw_ports" in *" $p "*) continue ;; esac
+fi
+to_open+=("$p")
+done
+[ "${#to_close[@]}" -gt 0 ] && { fw_close "${to_close[@]}" 2>/dev/null || true; }
+[ "${#to_open[@]}" -gt 0 ] && { fw_open "${to_open[@]}" 2>/dev/null || true; }; return 0
+}
+app_port(){ require_root; local name="${1:-}" new_port="${2:-}"
+if ! app_valid_name "$name"; then
+printf "${CLR_RED}错误: 非法应用名称${CLR_RESET}\n" >&2; return 1
+fi
+local dir="/opt/vps-sh/apps/$name"; local cf="$dir/compose.yaml"; [ -f "$cf" ] || cf="$dir/docker-compose.yml"
+if [ ! -d "$dir" ] || [ ! -f "$cf" ]; then
+printf "${CLR_RED}错误: 应用 [%s] 未安装${CLR_RESET}\n" "$name" >&2; return 1
+fi
+if ! grep -Eq '\$\{?APP_PORT\b' "$cf" 2>/dev/null; then
+printf "${CLR_RED}错误: 应用 [%s] 不支持修改映射端口${CLR_RESET}\n" "$name" >&2; return 1
+fi
+if [[ ! "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; then
+printf "${CLR_RED}错误: 端口无效 (1-65535)${CLR_RESET}\n" >&2; return 1
+fi
+local cur_port=$(app_get_port "$name"); local cur_host=$(app_get_host "$name"); local env_port=""
+[ -f "$dir/.env" ] && env_port=$(awk -F= '$1=="APP_PORT" {print $2; exit}' "$dir/.env" | tr -d " \"\047\r" || true)
+local cur_pub=$(app_get_ports "$cf" "$env_port" "$cur_host" 2>/dev/null || true)
+if [ "$new_port" = "$cur_port" ]; then
+_app_fw_sync "" "$cur_pub"; printf "${CLR_GREEN}应用 [%s] 端口已是 %s${CLR_RESET}\n" "$name" "$new_port"; return 0
+fi
+if app_port_in_use "$new_port"; then
+printf "${CLR_RED}错误: 端口 [%s] 已被占用${CLR_RESET}\n" "$new_port" >&2; return 1
+fi
+local new_pub=$(app_get_ports "$cf" "$new_port" "$cur_host" 2>/dev/null || true); local env_file="$dir/.env" had_env=0 bak_env=""
+if [ -f "$env_file" ]; then
+had_env=1; bak_env=$(cat "$env_file")
+fi
+_app_env_set "$dir" "APP_PORT" "$new_port" || return 1
+if ! (cd "$dir" && docker compose up -d); then
+if [ "$had_env" -eq 1 ]; then
+if [ -n "$bak_env" ]; then printf '%s\n' "$bak_env" > "$env_file"; else : > "$env_file"; fi
+chmod 600 "$env_file"
+else
+rm -f "$env_file"
+fi
+(cd "$dir" && docker compose up -d >/dev/null 2>&1 || true)
+printf "${CLR_RED}错误: 重载应用 [%s] 失败，已回滚配置${CLR_RESET}\n" "$name" >&2; return 1
+fi
+_app_fw_sync "$cur_pub" "$new_pub"; printf "${CLR_GREEN}端口已更新为 %s 并重载${CLR_RESET}\n" "$new_port"
+}
+app_host(){ require_root; local name="${1:-}" target="${2:-toggle}"
+if ! app_valid_name "$name"; then
+printf "${CLR_RED}错误: 非法应用名称${CLR_RESET}\n" >&2; return 1
+fi
+local dir="/opt/vps-sh/apps/$name"; local cf="$dir/compose.yaml"; [ -f "$cf" ] || cf="$dir/docker-compose.yml"
+if [ ! -d "$dir" ] || [ ! -f "$cf" ]; then
+printf "${CLR_RED}错误: 应用 [%s] 未安装${CLR_RESET}\n" "$name" >&2; return 1
+fi
+if ! grep -Eq '\$\{?APP_HOST\b' "$cf" 2>/dev/null; then
+printf "${CLR_RED}错误: 应用 [%s] 不支持切换网络绑定模式${CLR_RESET}\n" "$name" >&2; return 1
+fi
+local cur_host=$(app_get_host "$name")
+if [ "$target" = "toggle" ]; then
+[ "$cur_host" = "127.0.0.1" ] && target="0.0.0.0" || target="127.0.0.1"
+fi
+case "$target" in
+0.0.0.0|127.0.0.1) ;;
+*)
+printf "${CLR_RED}错误: 网络绑定参数无效，应为 0.0.0.0|127.0.0.1|toggle${CLR_RESET}\n" >&2; return 1; ;;
+esac
+local env_port=""; [ -f "$dir/.env" ] && env_port=$(awk -F= '$1=="APP_PORT" {print $2; exit}' "$dir/.env" | tr -d " \"\047\r" || true)
+local old_pub=$(app_get_ports "$cf" "$env_port" "$cur_host" 2>/dev/null || true)
+local new_pub=$(app_get_ports "$cf" "$env_port" "$target" 2>/dev/null || true)
+if [ "$target" = "$cur_host" ]; then
+_app_fw_sync "" "$new_pub"; printf "${CLR_GREEN}应用 [%s] 网络模式已是 %s${CLR_RESET}\n" "$name" "$target"; return 0
+fi
+local env_file="$dir/.env" had_env=0 bak_env=""
+if [ -f "$env_file" ]; then
+had_env=1; bak_env=$(cat "$env_file")
+fi
+_app_env_set "$dir" "APP_HOST" "$target" || return 1
+if ! (cd "$dir" && docker compose up -d); then
+if [ "$had_env" -eq 1 ]; then
+if [ -n "$bak_env" ]; then printf '%s\n' "$bak_env" > "$env_file"; else : > "$env_file"; fi
+chmod 600 "$env_file"
+else
+rm -f "$env_file"
+fi
+(cd "$dir" && docker compose up -d >/dev/null 2>&1 || true)
+printf "${CLR_RED}错误: 重载应用 [%s] 失败，已回滚配置${CLR_RESET}\n" "$name" >&2; return 1
+fi
+_app_fw_sync "$old_pub" "$new_pub"; printf "${CLR_GREEN}网络模式已切换至 %s 并生效${CLR_RESET}\n" "$target"
+}
+app_install(){ require_root; local name="${1:-}"; local port="${2:-}"; local host="${3:-0.0.0.0}"
+[ "$host" = "127.0.0.1" ] || host="0.0.0.0"
 if ! app_valid_name "$name"; then
 printf "${CLR_RED}错误: 非法应用名称${CLR_RESET}\n" >&2; return 1
 fi
@@ -2285,14 +2658,22 @@ if [ -n "$port" ] && [ "$port" != "-" ]; then
 if [[ ! "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
 printf "${CLR_RED}错误: 端口无效 (1-65535)${CLR_RESET}\n" >&2; return 1
 fi
-if app_port_in_use "$port"; then
-printf "${CLR_RED}错误: 端口 [%s] 已被占用${CLR_RESET}\n" "$port" >&2; return 1
-fi
 fi
 local orig_umask=$(umask); umask 077; app_init_dir; mkdir -p "$dir"
 if ! app_cloud_compose "$name" > "$dir/compose.yaml" 2>/dev/null || [ ! -s "$dir/compose.yaml" ]; then
 rm -rf "$dir"; umask "$orig_umask"; printf "${CLR_RED}错误: 无法获取应用 [%s] 的模板配置${CLR_RESET}\n" "$name" >&2; return 1
 fi
+local check_ports=$(app_get_ports "$dir/compose.yaml" "$port" "0.0.0.0" 2>/dev/null || true); local p
+if [ -n "$port" ] && [ "$port" != "-" ]; then
+case " $check_ports " in
+*" $port "*) ;; *) check_ports="${check_ports:+$check_ports }$port" ;;
+esac
+fi
+for p in $check_ports; do
+if app_port_in_use "$p"; then
+rm -rf "$dir"; umask "$orig_umask"; printf "${CLR_RED}错误: 端口 [%s] 已被占用${CLR_RESET}\n" "$p" >&2; return 1
+fi
+done
 local gen_pwd=""
 if grep -q '\${APP_PASSWORD' "$dir/compose.yaml" 2>/dev/null; then
 gen_pwd=$(LC_ALL=C tr -dc 'a-zA-Z0-9' < /dev/urandom 2>/dev/null | head -c 16 || openssl rand -hex 8 2>/dev/null || date +%s%N | head -c 16)
@@ -2314,16 +2695,17 @@ fi
 [ -n "$gen_pwd" ] && printf "APP_PASSWORD=%s\n" "$gen_pwd"; [ -n "$clean_token" ] && printf "TUNNEL_TOKEN=%s\n" "$clean_token"
 } > "$dir/.env"; umask "$orig_umask"
 if (cd "$dir" && docker compose up -d); then
-if [ "$host" = "0.0.0.0" ] && [ -n "$port" ] && [ "$port" != "-" ] && fw_is_initialized 2>/dev/null; then
-fw_open "$port" 2>/dev/null || true
-fi
-return 0
+local pub_ports=$(app_get_ports "$dir/compose.yaml" "$port" "$host" 2>/dev/null || true); _app_fw_sync "" "$pub_ports"; return 0
 else
 return 1
 fi
 }
-app_uninstall(){ require_root; local name="$1"; local purge_data="${2:-0}"; app_valid_name "$name" || return 1
-local dir="/opt/vps-sh/apps/$name"; [ -d "$dir" ] || return 0; local port=$(app_get_port "$name"); local host=$(app_get_host "$name")
+app_uninstall(){ require_root; local name="${1:-}"; local purge_data="${2:-0}"
+app_valid_name "$name" || { printf "${CLR_RED}错误: 非法应用名称${CLR_RESET}\n" >&2; return 1; }; local dir="/opt/vps-sh/apps/$name"
+[ -d "$dir" ] || return 0; local cf="$dir/compose.yaml"; [ -f "$cf" ] || cf="$dir/docker-compose.yml"
+local env_port="" host=$(app_get_host "$name") old_pub=""
+[ -f "$dir/.env" ] && env_port=$(awk -F= '$1=="APP_PORT" {print $2; exit}' "$dir/.env" | tr -d " \"\047\r" || true)
+[ -f "$cf" ] && old_pub=$(app_get_ports "$cf" "$env_port" "$host" 2>/dev/null || true)
 if [ "$purge_data" = "1" ]; then
 (cd "$dir" && docker compose down -v 2>/dev/null || true)
 rm -rf "$dir"
@@ -2331,9 +2713,7 @@ else
 (cd "$dir" && docker compose down 2>/dev/null || true)
 rm -f "$dir/compose.yaml" "$dir/docker-compose.yml" "$dir/.env" 2>/dev/null || true
 fi
-if [ "$host" = "0.0.0.0" ] && [ -n "$port" ] && [ "$port" != "-" ] && fw_is_initialized 2>/dev/null; then
-fw_close "$port" 2>/dev/null || true
-fi
+_app_fw_sync "$old_pub" ""
 }
 app_render_col(){ local idx="$1" name="$2" st="$3" tag="$4" target="${5:-39}"; local num=$(printf "[%2d]" "$idx"); local raw_badge=""
 local col_badge=""
@@ -2350,8 +2730,8 @@ local raw_text="  $num $name$raw_tag$raw_badge"; local m=${#raw_text}; local b=$
 local w=$(( (m + b) / 2 )); local pad=0; [ "$target" -gt "$w" ] && pad=$((target - w)); local padding=$(printf "%*s" "$pad" "")
 printf "  ${CLR_CYAN}%s${CLR_RESET} %s%s%s%s" "$num" "$name" "$tag_str" "$col_badge" "$padding"
 }
-ui_app_install_single(){ local app="$1"; local meta=$(app_meta "$app" 2>/dev/null || true); local title="$app"; local default_port="8080"
-local desc=""; local auth=""; local url=""
+ui_app_install_single(){ local app="${1:-}"; app_valid_name "$app" || return 1; local meta=$(app_meta "$app" 2>/dev/null || true)
+local title="$app"; local default_port="8080"; local desc=""; local auth=""; local url=""
 if [ -n "$meta" ]; then
 local raw_tag=""; IFS='|' read -r title default_port raw_tag desc auth url <<< "$meta"; [ -z "$desc" ] && desc="$raw_tag"
 fi
@@ -2395,7 +2775,7 @@ local sniffed=$( (cd "$target_dir" && docker compose logs 2>&1 | grep -iE 'passw
 [ -n "$sniffed" ] && printf "  ${CLR_YELLOW}日志嗅探:${CLR_RESET} %s\n" "$sniffed"
 fi
 else
-printf "\n${CLR_RED}部署失败，请检查 Docker 日志${CLR_RESET}\n"
+printf "\n${CLR_RED}部署失败，请检查上方信息或 Docker 日志${CLR_RESET}\n"
 fi
 echo; read -r -p "按回车返回..."; return 0; ;;
 p|P)
@@ -2423,7 +2803,7 @@ return 0; ;;
 esac
 done
 }
-ui_app_manage_single(){ local name="$1"; local st=$(app_status "$name")
+ui_app_manage_single(){ local name="${1:-}"; app_valid_name "$name" || return 1; local st=$(app_status "$name")
 if [ "$st" = "未安装" ]; then
 ui_app_install_single "$name"; return 0
 fi
@@ -2458,21 +2838,31 @@ fi
 read -r -p "请选择: " choice
 case "$choice" in
 1)
-app_restart "$name"; read -r -p "按回车返回..."; ;;
+app_restart "$name" || true; read -r -p "按回车返回..."; ;;
 2)
 if [ "$st" = "已停止" ]; then
-app_start "$name"
+app_start "$name" || true
 else
-app_stop "$name"
+app_stop "$name" || true
 fi
 read -r -p "按回车返回..."; ;;
 3)
-app_logs "$name"; read -r -p "按回车返回..."; ;;
+app_logs "$name" || true; read -r -p "按回车返回..."; ;;
 4)
-app_update "$name"; read -r -p "按回车返回..."; ;;
+app_update "$name" || true; read -r -p "按回车返回..."; ;;
 5)
-read -r -p "删除数据目录? (y/N): " purge_confirm; local purge=0; [[ "$purge_confirm" =~ ^[yY] ]] && purge=1; app_uninstall "$name" "$purge"
-printf "${CLR_GREEN}已卸载${CLR_RESET}\n"; read -r -p "按回车返回..."; return 0; ;;
+read -r -p "确认卸载 $name? (y/N, 回车取消): " confirm
+case "$confirm" in
+[yY][eE][sS]|[yY])
+read -r -p "同时删除数据目录 ($target_dir/data)? (y/N): " purge_confirm; local purge=0
+if [[ "$purge_confirm" =~ ^([yY]|[yY][eE][sS])$ ]]; then
+purge=1
+fi
+app_uninstall "$name" "$purge" || true; printf "${CLR_GREEN}已卸载${CLR_RESET}\n"; read -r -p "按回车返回..."; return 0; ;;
+*)
+continue; ;;
+esac
+;;
 6)
 local editor="${EDITOR:-}"
 if [ -z "$editor" ]; then
@@ -2480,44 +2870,17 @@ command -v nano >/dev/null 2>&1 && editor="nano"; [ -z "$editor" ] && command -v
 [ -z "$editor" ] && editor="vi"
 fi
 local compose_file="$target_dir/compose.yaml"; [ -f "$compose_file" ] || compose_file="$target_dir/docker-compose.yml"
-"$editor" "$compose_file"; echo; read -r -p "配置已保存，是否重新编排以生效改动? (y/N): " reload_cf
-if [[ "$reload_cf" =~ ^[yY] ]]; then
-(cd "$target_dir" && docker compose up -d --force-recreate)
-printf "${CLR_GREEN}已重新编排生效${CLR_RESET}\n"; read -r -p "按回车返回..."
+"$editor" "$compose_file"; echo; read -r -p "配置已保存，是否重新编排以生效改动? (y/N, 回车取消): " reload_cf
+if [[ "$reload_cf" =~ ^([yY]|[yY][eE][sS])$ ]]; then
+app_restart "$name" || true; printf "${CLR_GREEN}已重新编排生效${CLR_RESET}\n"; read -r -p "按回车返回..."
 fi
 ;;
 p|P)
-read -r -p "请输入新映射端口 [$port]: " input_port
-if [ -n "$input_port" ] && [ "$input_port" != "$port" ]; then
-if [[ ! "$input_port" =~ ^[0-9]+$ ]] || [ "$input_port" -lt 1 ] || [ "$input_port" -gt 65535 ]; then
-printf "${CLR_RED}端口必须为 1-65535 之间的数字${CLR_RESET}\n"; sleep 1; elif app_port_in_use "$input_port"; then
-printf "${CLR_RED}错误: 端口 [%s] 已被占用${CLR_RESET}\n" "$input_port"; sleep 1
-else
-printf "正在更新端口至 %s...\n" "$input_port"; local env_file="$target_dir/.env"; local tmp_env=$(mktemp)
-[ -f "$env_file" ] && grep -v '^APP_PORT=' "$env_file" > "$tmp_env" 2>/dev/null || true; echo "APP_PORT=$input_port" >> "$tmp_env"
-mv -f "$tmp_env" "$env_file"; chmod 600 "$env_file"
-if [ "$host" = "0.0.0.0" ] && fw_is_initialized 2>/dev/null; then
-[ -n "$port" ] && [ "$port" != "-" ] && fw_close "$port" 2>/dev/null || true; fw_open "$input_port" 2>/dev/null || true
-fi
-(cd "$target_dir" && docker compose up -d)
-printf "${CLR_GREEN}端口已更新为 %s 并重载${CLR_RESET}\n" "$input_port"; read -r -p "按回车返回..."
-fi
-fi
-;;
+[ "$port" = "-" ] && continue; read -r -p "请输入新映射端口 [$port] (回车取消): " input_port; [ -z "$input_port" ] && continue
+[ "$input_port" = "$port" ] && continue; printf "正在更新端口至 %s...\n" "$input_port"; app_port "$name" "$input_port" || true
+read -r -p "按回车返回..."; ;;
 h|H)
-local new_host="127.0.0.1"; [ "$host" = "127.0.0.1" ] && new_host="0.0.0.0"; printf "正在切换网络模式至 %s...\n" "$new_host"
-local env_file="$target_dir/.env"; local tmp_env=$(mktemp)
-[ -f "$env_file" ] && grep -v '^APP_HOST=' "$env_file" > "$tmp_env" 2>/dev/null || true; echo "APP_HOST=$new_host" >> "$tmp_env"
-mv -f "$tmp_env" "$env_file"; chmod 600 "$env_file"
-if fw_is_initialized 2>/dev/null && [ -n "$port" ] && [ "$port" != "-" ]; then
-if [ "$new_host" = "0.0.0.0" ]; then
-fw_open "$port" 2>/dev/null || true
-else
-fw_close "$port" 2>/dev/null || true
-fi
-fi
-(cd "$target_dir" && docker compose up -d)
-printf "${CLR_GREEN}网络模式已切换至 %s 并生效${CLR_RESET}\n" "$new_host"; read -r -p "按回车返回..."; ;;
+[ "$port" = "-" ] && continue; printf "正在切换网络模式...\n"; app_host "$name" toggle || true; read -r -p "按回车返回..."; ;;
 0|*)
 return 0; ;;
 esac
