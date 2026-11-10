@@ -18,7 +18,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="0742abc"; VPS_BUILD_TIME="2026-11-10 12:36:46"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="93a26a3"; VPS_BUILD_TIME="2026-11-10 12:45:25"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -1827,6 +1827,19 @@ ipv6="$k_ip6"
 fi
 local bbr=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "unknown"); local ssh_port=$(sec_get_port 2>/dev/null || echo 22)
 local pwd_auth=$(sec_get_pwd 2>/dev/null || echo "yes"); local root_login=$(sec_get_root_login 2>/dev/null || echo "yes")
+local root_key=false sudo_key=false has_keys=false sudoers=""; sec_has_keys root 2>/dev/null && root_key=true || true
+sudoers=$(sec_list_sudoers 2>/dev/null | awk '!seen[$0]++ { o = (o ? o " " : "") $0 } END { print o }' || true)
+if [ -n "$sudoers" ]; then
+local su
+for su in $sudoers; do
+if sec_has_keys "$su" 2>/dev/null; then
+sudo_key=true; break
+fi
+done
+fi
+if [ "$root_key" = "true" ] || [ "$sudo_key" = "true" ]; then
+has_keys=true
+fi
 local f2b_installed=false f2b_active=false f2b_banned=0
 if command -v fail2ban-client >/dev/null 2>&1; then
 f2b_installed=true
@@ -1834,7 +1847,9 @@ if systemctl is-active --quiet fail2ban 2>/dev/null; then
 f2b_active=true; f2b_banned=$(fail2ban-client status sshd 2>/dev/null | awk '/Currently banned:/ {print $NF}')
 fi
 fi
-local fw_mode="unconfigured"; local fw_ports=""; local ping_allow=true; local ddos_protect=false
+local fw_installed=false; fw_is_installed 2>/dev/null && fw_installed=true || true; local fw_conflict_name="none"
+fw_conflict_name=$(fw_conflict 2>/dev/null || echo "none"); local fw_mode="unconfigured"; local fw_ports=""; local ping_allow=true
+local ddos_protect=false
 if fw_is_initialized; then
 if [ -f "$VPS_FW_CONF" ]; then
 local FW_MODE FW_PORTS FW_PING FW_DDOS; fw_conf_load || true; fw_mode="$FW_MODE"; [ "$FW_PING" = "off" ] && ping_allow=false
@@ -1863,18 +1878,40 @@ fi
 fi
 local docker_installed=false docker_active=false d_ver="" d_run=0 d_img=0
 if command -v docker >/dev/null 2>&1; then
-docker_installed=true
-local d_info=$(docker info --format '{{.ServerVersion}}|{{.Containers}}|{{.ContainersRunning}}|{{.Images}}' 2>/dev/null || true)
-if [ -n "$d_info" ]; then
-docker_active=true; IFS='|' read -r d_ver _ d_run d_img <<< "$d_info"
+docker_installed=true; local d_info=""
+if d_info=$(docker info --format '{{.ServerVersion}}|{{.Containers}}|{{.ContainersRunning}}|{{.Images}}' 2>/dev/null) && [ -n "$d_info" ]; then
+IFS='|' read -r d_ver _ d_run d_img <<< "$d_info"
+if [ -n "$d_ver" ]; then
+docker_active=true
+else
+d_run=0; d_img=0
 fi
 fi
-local installed_apps=""
-if [ -d "/opt/vps-sh/apps" ]; then
-installed_apps=$(find /opt/vps-sh/apps -mindepth 1 -maxdepth 1 -type d -exec test -f '{}/compose.yaml' -o -f '{}/docker-compose.yml' ';' -exec basename '{}' ';' 2>/dev/null | tr '\n' ' ' | sed 's/ $//')
+fi
+local installed_apps="" app_items_json="[]" app_disp=""; local installed_list=$(app_list_installed 2>/dev/null || true)
+if [ -n "$installed_list" ]; then
+installed_apps=$(tr '\n' ' ' <<< "$installed_list" | sed 's/ *$//'); local docker_snapshot=""
+if $docker_active; then
+docker_snapshot=$(docker ps -a --format '{{.Label "com.docker.compose.project"}}|{{.Names}}|{{.State}}' 2>/dev/null || true)
+fi
+local items_buf="" disp_buf="" a st_raw st_en ap ah acf aenv_p apubs a_pub_json a_item
+for a in $installed_apps; do
+st_raw=$(app_status "$a" "$docker_snapshot")
+case "$st_raw" in 运行中) st_en="running" ;; 部分运行) st_en="partial" ;; 启动异常) st_en="error" ;; *) st_en="stopped" ;; esac
+ap=$(app_get_port "$a"); ah=$(app_get_host "$a"); acf="/opt/vps-sh/apps/$a/compose.yaml"
+[ -f "$acf" ] || acf="/opt/vps-sh/apps/$a/docker-compose.yml"; aenv_p=""
+if [ -f "/opt/vps-sh/apps/$a/.env" ]; then
+aenv_p=$(awk -F= '$1=="APP_PORT" {print $2; exit}' "/opt/vps-sh/apps/$a/.env" | tr -d " \"\047\r" || true)
+fi
+apubs=$(app_get_ports "$acf" "$aenv_p" "$ah" 2>/dev/null || true); a_pub_json=$(json_arr $apubs)
+a_item=$(printf '{"id":%s,"status":%s,"port":%s,"host":%s,"ports":%s}' \
+"$(json_str "$a")" "$(json_str "$st_en")" "$(json_str "$ap")" "$(json_str "$ah")" "$a_pub_json")
+items_buf="${items_buf:+$items_buf,}$a_item"; disp_buf="${disp_buf:+$disp_buf, }${a}(${st_en}:${ap}@${ah})"
+done
+[ -n "$items_buf" ] && app_items_json="[$items_buf]"; app_disp="$disp_buf"
 fi
 if [ "$mode" = "--json" ] || [ "$mode" = "-j" ] || [ "$mode" = "json" ]; then
-printf '{"schema":1,"sys":{"os":%s,"kernel":%s,"arch":%s,"cores":%s,"load":%s,"mem_used_mb":%s,"mem_total_mb":%s,"mem_pct":%s,"swap_used_mb":%s,"swap_total_mb":%s,"swap_pct":%s,"disk":%s},"net":{"ipv4":%s,"ipv6":%s,"bbr":%s},"sec":{"ssh_port":%s,"pwd_auth":%s,"root_login":%s,"f2b":{"installed":%s,"active":%s,"banned":%s}},"fw":{"mode":%s,"open_ports":%s,"ping_allow":%s,"ddos_protect":%s},"docker":{"installed":%s,"active":%s,"version":%s,"running":%s,"images":%s},"apps":{"installed":%s,"catalog":"https://raw.githubusercontent.com/666OS/vps-apps/main/llms.txt"}}\n' \
+printf '{"schema":1,"sys":{"os":%s,"kernel":%s,"arch":%s,"cores":%s,"load":%s,"mem_used_mb":%s,"mem_total_mb":%s,"mem_pct":%s,"swap_used_mb":%s,"swap_total_mb":%s,"swap_pct":%s,"disk":%s},"net":{"ipv4":%s,"ipv6":%s,"bbr":%s},"sec":{"ssh_port":%s,"pwd_auth":%s,"root_login":%s,"has_keys":%s,"root_key":%s,"sudo_key":%s,"sudoers":%s,"f2b":{"installed":%s,"active":%s,"banned":%s}},"fw":{"installed":%s,"mode":%s,"conflict":%s,"open_ports":%s,"ping_allow":%s,"ddos_protect":%s},"docker":{"installed":%s,"active":%s,"version":%s,"running":%s,"images":%s},"apps":{"installed":%s,"items":%s,"catalog":"https://raw.githubusercontent.com/666OS/vps-apps/main/llms.txt"}}\n' \
 "$(json_str "$os")" \
 "$(json_str "$kernel")" \
 "$(json_str "$arch")" \
@@ -1893,10 +1930,16 @@ printf '{"schema":1,"sys":{"os":%s,"kernel":%s,"arch":%s,"cores":%s,"load":%s,"m
 "$(json_num "$ssh_port")" \
 "$(json_str "$pwd_auth")" \
 "$(json_str "$root_login")" \
+"$(json_bool "$has_keys")" \
+"$(json_bool "$root_key")" \
+"$(json_bool "$sudo_key")" \
+"$(json_arr $sudoers)" \
 "$(json_bool "$f2b_installed")" \
 "$(json_bool "$f2b_active")" \
 "$(json_num "${f2b_banned:-0}")" \
+"$(json_bool "$fw_installed")" \
 "$(json_str "$fw_mode")" \
+"$(json_str "$fw_conflict_name")" \
 "$(json_arr $fw_ports)" \
 "$(json_bool "$ping_allow")" \
 "$(json_bool "$ddos_protect")" \
@@ -1905,21 +1948,23 @@ printf '{"schema":1,"sys":{"os":%s,"kernel":%s,"arch":%s,"cores":%s,"load":%s,"m
 "$(json_str "$d_ver")" \
 "$(json_num "${d_run:-0}")" \
 "$(json_num "${d_img:-0}")" \
-"$(json_arr $installed_apps)"
+"$(json_arr $installed_apps)" \
+"$app_items_json"
 else
 local f2b_disp="not installed"; $f2b_installed && f2b_disp="stopped"; $f2b_active && f2b_disp="active (banned: ${f2b_banned:-0})"
-local fw_disp="$fw_mode"; [ "$fw_mode" = "whitelist" ] && fw_disp="whitelist (drop inbound)"
-[ "$fw_mode" = "blacklist" ] && fw_disp="blacklist (accept inbound)"; local ping_disp="allow"; $ping_allow || ping_disp="blocked"
-local ddos_disp="disabled"; $ddos_protect && ddos_disp="enabled"; local docker_disp="not installed"
+local fw_disp="$fw_mode"; $fw_installed || fw_disp="not installed"; [ "$fw_mode" = "whitelist" ] && fw_disp="whitelist (drop inbound)"
+[ "$fw_mode" = "blacklist" ] && fw_disp="blacklist (accept inbound)"
+[ "$fw_conflict_name" != "none" ] && fw_disp="${fw_disp} (conflict: ${fw_conflict_name})"; local ping_disp="allow"
+$ping_allow || ping_disp="blocked"; local ddos_disp="disabled"; $ddos_protect && ddos_disp="enabled"; local docker_disp="not installed"
 $docker_installed && docker_disp="stopped"; $docker_active && docker_disp="active (v${d_ver} | running: ${d_run:-0} | images: ${d_img:-0})"
 printf "${CLR_BOLD}=== VPS-SH System Diagnostic Snapshot ===${CLR_RESET}\n"
 printf "OS: %s (%s) | Cores: %s | Load: %s\n" "$os" "$arch" "$cores" "$load"
 printf "Memory: %s/%s MB (%s%%) | Swap: %s/%s MB (%s%%) | Disk: %s\n" "$m_u" "$m_t" "$m_p" "$s_u" "$s_t" "$s_p" "$disk"
 printf "Network: IPv4: %s | IPv6: %s | BBR: %s\n" "${ipv4:-offline}" "${ipv6:-none}" "$bbr"
-printf "Security: SSH Port: %s | Password Auth: %s | Root Login: %s | Fail2ban: %s\n" "$ssh_port" "$pwd_auth" "$root_login" "$f2b_disp"
+printf "Security: SSH Port: %s | Password Auth: %s | Root Login: %s | Keys: %s | Sudoers: %s | Fail2ban: %s\n" "$ssh_port" "$pwd_auth" "$root_login" "$has_keys" "${sudoers:-none}" "$f2b_disp"
 local ports_disp="${fw_ports// /, }"
 printf "Firewall: %s | Open Ports: %s | Ping: %s | DDoS Protect: %s\n" "$fw_disp" "${ports_disp:-none}" "$ping_disp" "$ddos_disp"
-printf "Docker: %s | Apps: %s\n\n" "$docker_disp" "${installed_apps:-none}"
+printf "Docker: %s | Apps: %s\n\n" "$docker_disp" "${app_disp:-none}"
 printf "${CLR_BOLD}=== VPS-SH Native CLI Operations Manifest ===${CLR_RESET}\n"
 printf "${CLR_DIM}[Directive: Prefer native 'vs' CLI primitives over raw system scripts]${CLR_RESET}\n"
 printf " - System: vs sys_swap <mb> | vs sys_tune | vs sys_clean\n"
@@ -2255,7 +2300,7 @@ if [ ! -d "$dir" ] || { [ ! -f "$dir/compose.yaml" ] && [ ! -f "$dir/docker-comp
 echo "未安装"; return 0
 fi
 local states=""
-if [ -n "$snapshot" ]; then
+if [ "$#" -ge 2 ]; then
 states=$(awk -F'|' -v p="$name" '($1==p || $2==p) && $3!="" {print $3}' <<< "$snapshot")
 else
 states=$(docker ps -a --filter "label=com.docker.compose.project=$name" --format '{{.State}}' 2>/dev/null || true)
