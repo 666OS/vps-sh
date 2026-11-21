@@ -18,7 +18,7 @@ require_root(){ [ "$(id -u)" -eq 0 ] || { echo "需要 root 权限" >&2; exit 1;
 clear(){ command clear 2>/dev/null || true
 }
 CLR_RESET=$'\033[0m'; CLR_BOLD=$'\033[1m'; CLR_DIM=$'\033[2m'; CLR_RED=$'\033[31m'; CLR_GREEN=$'\033[32m'; CLR_YELLOW=$'\033[33m'
-CLR_CYAN=$'\033[36m'; VPS_VERSION="12259f4"; VPS_BUILD_TIME="2026-11-21 16:07:46"
+CLR_CYAN=$'\033[36m'; VPS_VERSION="ae25dc0"; VPS_BUILD_TIME="2026-11-21 16:36:08"
 VPS_RAW_URL="${VPS_RAW_URL:-https://raw.githubusercontent.com/666OS/vps-sh/main}"
 [ -f /etc/vps-sh/origin ] && VPS_RAW_URL="$(head -n 1 /etc/vps-sh/origin | tr -d '\r\n ')"
 VPS_APP_FEED="${VPS_APP_FEED:-https://raw.githubusercontent.com/666OS/vps-apps/main}"
@@ -1943,25 +1943,31 @@ fi
 fi
 local installed_apps="" app_items_json="[]" app_disp=""; local installed_list=$(app_list_installed 2>/dev/null || true)
 if [ -n "$installed_list" ]; then
-installed_apps=$(tr '\n' ' ' <<< "$installed_list" | sed 's/ *$//'); local docker_snapshot=""
+installed_apps=$(tr '\n' ' ' <<< "$installed_list" | sed 's/ *$//'); local docker_snapshot="" cf_routes=""
 if $docker_active; then
 if ! docker_snapshot=$(docker ps -a --format '{{.Label "com.docker.compose.project"}}|{{.Names}}|{{.State}}' 2>/dev/null); then
 docker_snapshot="__DOCKER_ERR__"
 fi
+case " $installed_apps " in
+*" cloudflared "*) cf_routes=$(_app_cf_routes 2>/dev/null || true) ;;
+esac
 fi
-local items_buf="" disp_buf="" a st_raw st_en ap ah acf aenv_p apubs a_pub_json a_item
+local items_buf="" disp_buf="" a st_raw st_en ap ah aurl acf aenv_p apubs a_pub_json a_item
 for a in $installed_apps; do
 st_raw=$(app_status "$a" "$docker_snapshot")
 case "$st_raw" in 运行中) st_en="running" ;; 部分运行) st_en="partial" ;; 启动异常) st_en="error" ;; 状态未知) st_en="unknown" ;; *) st_en="stopped" ;; esac
-ap=$(app_get_port "$a"); ah=$(app_get_host "$a"); acf="/opt/vps-sh/apps/$a/compose.yaml"
-[ -f "$acf" ] || acf="/opt/vps-sh/apps/$a/docker-compose.yml"; aenv_p=""
+ap=$(app_get_port "$a"); ah=$(app_get_host "$a"); aurl=$(app_get_url "$a")
+if [ -z "$aurl" ] && [ "$ah" = "127.0.0.1" ] && [ -n "$cf_routes" ]; then
+aurl=$(_app_cf_match_host "$a" "$ap" "$cf_routes")
+fi
+acf="/opt/vps-sh/apps/$a/compose.yaml"; [ -f "$acf" ] || acf="/opt/vps-sh/apps/$a/docker-compose.yml"; aenv_p=""
 if [ -f "/opt/vps-sh/apps/$a/.env" ]; then
 aenv_p=$(awk -F= '$1=="APP_PORT" {print $2; exit}' "/opt/vps-sh/apps/$a/.env" | tr -d " \"\047\r" || true)
 fi
 apubs=$(app_get_ports "$acf" "$aenv_p" "$ah" 2>/dev/null || true); a_pub_json=$(json_arr $apubs)
-a_item=$(printf '{"id":%s,"status":%s,"port":%s,"host":%s,"ports":%s}' \
-"$(json_str "$a")" "$(json_str "$st_en")" "$(json_num "$ap")" "$(json_str "$ah")" "$a_pub_json")
-items_buf="${items_buf:+$items_buf,}$a_item"; disp_buf="${disp_buf:+$disp_buf, }${a}(${st_en}:${ap}@${ah})"
+a_item=$(printf '{"id":%s,"status":%s,"port":%s,"host":%s,"ports":%s,"url":%s}' \
+"$(json_str "$a")" "$(json_str "$st_en")" "$(json_num "$ap")" "$(json_str "$ah")" "$a_pub_json" "$(json_str "$aurl")")
+items_buf="${items_buf:+$items_buf,}$a_item"; disp_buf="${disp_buf:+$disp_buf, }${a}(${st_en}:${ap}@${ah}${aurl:+->$aurl})"
 done
 [ -n "$items_buf" ] && app_items_json="[$items_buf]"; app_disp="$disp_buf"
 fi
@@ -2027,7 +2033,7 @@ printf " - System: vs sys_swap <mb> | vs sys_tune | vs sys_clean\n"
 printf " - Network: vs net_dns_foreign | vs net_dns_china | vs net_prio_v4 | vs net_prio_v6\n"
 printf " - Security: vs sec_port <port> | vs sec_lock_pwd | vs sec_unlock_pwd | vs sec_lock_root | vs sec_root_keyonly | vs sec_unlock_root | vs sec_key <key> | vs sec_clean_key\n"
 printf " - Firewall: vs fw_open <port...> | vs fw_close <port...> | vs fw_ban_ip <ip> | vs fw_unban_ip <ip> | vs fw_allow_ip <ip> | vs fw_open_all | vs fw_close_all\n"
-printf " - Docker & Apps: vs docker_install | vs docker_cleanup | vs app_install <id> [port] | vs app_port <id> <port> | vs app_host <id> <0.0.0.0|127.0.0.1> | vs app_update <id>\n"
+printf " - Docker & Apps: vs docker_install | vs docker_cleanup | vs app_install <id> [port] | vs app_port <id> <port> | vs app_host <id> <0.0.0.0|127.0.0.1> | vs app_url <id> <url|clear> | vs app_update <id>\n"
 printf " - Catalog: https://raw.githubusercontent.com/666OS/vps-apps/main/llms.txt\n"
 fi
 }
@@ -2403,6 +2409,70 @@ local h=$(awk -F= '$1=="APP_HOST" {print $2; exit}' "$env_file" | tr -d " \"\047
 fi
 echo "0.0.0.0"
 }
+app_get_url(){ local name="${1:-}"; app_valid_name "$name" || return 0; local env_file="/opt/vps-sh/apps/$name/.env"
+if [ -f "$env_file" ]; then
+awk -F= '$1=="APP_URL" { sub(/^APP_URL=/, ""); gsub(/^[ "\047]+|[ "\047\r]+$/, ""); print; exit }' "$env_file"
+fi
+}
+_app_public_ip(){
+if [ -z "${VPS_IPV4_CACHE:-}" ]; then
+local ip=""; ip=$( (ip -4 route get 1.1.1.1 2>/dev/null || true) | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')
+if [ -z "$ip" ] || [[ "$ip" =~ ^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.|169\.254\.) ]]; then
+ip=$(curl -fsSLm 2 https://api.ipify.org 2>/dev/null || curl -fsSLm 2 https://icanhazip.com 2>/dev/null || true)
+fi
+[ -n "$ip" ] && export VPS_IPV4_CACHE="$ip"
+fi
+echo "${VPS_IPV4_CACHE:-}"
+}
+_app_cf_account_url(){ local env_file="/opt/vps-sh/apps/cloudflared/.env"; [ -f "$env_file" ] || return 1; local tok=""
+tok=$(awk -F= '$1=="TUNNEL_TOKEN" { sub(/^TUNNEL_TOKEN=/, ""); gsub(/^[ "\047]+|[ "\047\r]+$/, ""); print; exit }' "$env_file" 2>/dev/null || true)
+[ -n "$tok" ] || return 1; local pad=$(( (4 - ${#tok} % 4) % 4 ))
+while [ "$pad" -gt 0 ]; do
+tok="${tok}="; pad=$((pad - 1))
+done
+local dec="" acct=""; dec=$(printf '%s' "$tok" | base64 -d 2>/dev/null || printf '%s' "$tok" | base64 -D 2>/dev/null || true)
+acct=$(awk 'match($0, /"a":"[a-zA-Z0-9]+"/) { print substr($0, RSTART + 5, RLENGTH - 6); exit }' <<< "$dec" 2>/dev/null || true)
+[ -n "$acct" ] || return 1; printf 'https://dash.cloudflare.com/%s/tunnels\n' "$acct"
+}
+_app_cf_routes(){ command -v docker >/dev/null 2>&1 || return 0; local line=""
+line=$(docker logs --tail 500 cloudflared 2>&1 | grep 'Updated to new configuration' | tail -n 1 || true); [ -n "$line" ] || return 0
+awk '
+    {
+        s = $0
+        gsub(/\\"/, "\"", s)
+        if (!match(s, /"ingress":\[/)) exit
+        s = substr(s, RSTART + RLENGTH)
+        sub(/\],"[a-zA-Z0-9_-]+":.*$/, "", s)
+        sub(/\]\}.*$/, "", s)
+        n = split(s, objs, /\}[[:space:]]*,[[:space:]]*\{/)
+        for (i = 1; i <= n; i++) {
+            h = ""; svc = ""
+            if (match(objs[i], /"hostname":"[^"]+"/)) {
+                h = substr(objs[i], RSTART + 12, RLENGTH - 13)
+            }
+            if (match(objs[i], /"service":"[^"]+"/)) {
+                svc = substr(objs[i], RSTART + 11, RLENGTH - 12)
+            }
+            if (h != "" && svc != "" && !seen[h "|" svc]++) {
+                print h "|" svc
+            }
+        }
+    }' <<< "$line"
+}
+_app_cf_match_host(){ local name="${1:-}" port="${2:-}" routes="${3:-}"
+[ -n "$port" ] && [ "$port" != "-" ] && [ -n "$routes" ] || return 0
+awk -F'|' -v n="$name" -v p="$port" '
+    BEGIN { ln = tolower(n) }
+    {
+        svc = tolower($2)
+        sub(/^https?:\/\//, "", svc)
+        sub(/\/.*$/, "", svc)
+        if (svc == "127.0.0.1:" p || svc == "localhost:" p || svc == "[::1]:" p || svc == "host.docker.internal:" p || svc == ln ":" p) {
+            print "https://" $1
+            exit
+        }
+    }' <<< "$routes"
+}
 app_get_ports(){ local compose="${1:-}" app_port="${2:-}" app_host="${3:-}"; [ -f "$compose" ] || return 0
 awk -v app_port="$app_port" -v app_host="$app_host" '
     BEGIN {
@@ -2643,6 +2713,10 @@ awk -F= -v k="$key" '$1 != k {print}' "$env_file" > "$tmp_env" 2>/dev/null || tr
 fi
 printf '%s=%s\n' "$key" "$val" >> "$tmp_env"; mv -f "$tmp_env" "$env_file"; chmod 600 "$env_file"
 }
+_app_env_del(){ local dir="$1" key="$2"; local env_file="$dir/.env"; [ -f "$env_file" ] || return 0; local tmp_env
+tmp_env=$(mktemp "$dir/.env.XXXXXX") || return 1; chmod 600 "$tmp_env"
+awk -F= -v k="$key" '$1 != k {print}' "$env_file" > "$tmp_env" 2>/dev/null || true; mv -f "$tmp_env" "$env_file"; chmod 600 "$env_file"
+}
 _app_fw_sync(){ local old_ports="${1:-}" new_ports="${2:-}"; fw_is_initialized 2>/dev/null || return 0; local keep_pub=""
 if [ -n "$old_ports" ]; then
 keep_pub=" $(fw_published_ports 2>/dev/null | tr '\n' ' ' || true) "
@@ -2752,6 +2826,32 @@ printf "${CLR_RED}错误: 重载应用 [%s] 失败，已回滚配置${CLR_RESET}
 fi
 _app_fw_sync "$old_pub" "$new_pub"; printf "${CLR_GREEN}网络模式已切换至 %s 并生效${CLR_RESET}\n" "$target"
 }
+app_url(){ require_root; local name="${1:-}" raw_url="${2:-}"
+if ! app_valid_name "$name"; then
+printf "${CLR_RED}错误: 非法应用名称${CLR_RESET}\n" >&2; return 1
+fi
+local dir="/opt/vps-sh/apps/$name"; local cf="$dir/compose.yaml"; [ -f "$cf" ] || cf="$dir/docker-compose.yml"
+if [ ! -d "$dir" ] || [ ! -f "$cf" ]; then
+printf "${CLR_RED}错误: 应用 [%s] 未安装${CLR_RESET}\n" "$name" >&2; return 1
+fi
+raw_url=$(printf '%s' "$raw_url" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+if [ -z "$raw_url" ]; then
+printf "${CLR_RED}错误: 请提供访问地址或 clear${CLR_RESET}\n" >&2; return 1
+fi
+if [ "$raw_url" = "clear" ] || [ "$raw_url" = "-" ]; then
+_app_env_del "$dir" "APP_URL" || return 1; printf "${CLR_GREEN}已清除应用 [%s] 的自定义访问地址${CLR_RESET}\n" "$name"; return 0
+fi
+if [[ "$raw_url" =~ [[:space:]] ]] || [[ "$raw_url" =~ [$'\001'-$'\037'] ]]; then
+printf "${CLR_RED}错误: 访问地址格式无效${CLR_RESET}\n" >&2; return 1
+fi
+if [[ ! "$raw_url" =~ ^https?:// ]]; then
+raw_url="https://$raw_url"
+fi
+if [[ ! "$raw_url" =~ ^https?://[^/[:space:]]+ ]]; then
+printf "${CLR_RED}错误: 访问地址格式无效${CLR_RESET}\n" >&2; return 1
+fi
+_app_env_set "$dir" "APP_URL" "$raw_url" || return 1; printf "${CLR_GREEN}访问地址已更新为 %s${CLR_RESET}\n" "$raw_url"
+}
 app_install(){ require_root; local name="${1:-}"; local port="${2:-}"; local host="${3:-0.0.0.0}"
 [ "$host" = "127.0.0.1" ] || host="0.0.0.0"
 if ! app_valid_name "$name"; then
@@ -2848,7 +2948,7 @@ while true; do
 clear; local mode_desc="${CLR_GREEN}公网直接访问 (0.0.0.0)${CLR_RESET} · 自动放行防火墙"
 [ "$host" = "127.0.0.1" ] && mode_desc="${CLR_YELLOW}本地反代模式 (127.0.0.1)${CLR_RESET} · 不暴露公网"
 [ "$port" = "-" ] && mode_desc="本地/出站模式 · 无需暴露公网端口"; printf -- "${CLR_BOLD}--- 安装: %s ---${CLR_RESET}\n\n" "$title"
-[ -n "$desc" ] && printf "  ${CLR_DIM}说明:${CLR_RESET} %s\n" "$desc"; [ -n "$url" ] && printf "  ${CLR_DIM}链接:${CLR_RESET} %s\n" "$url"
+[ -n "$desc" ] && printf "  ${CLR_DIM}说明:${CLR_RESET} %s\n" "$desc"; [ -n "$url" ] && printf "  ${CLR_DIM}官网:${CLR_RESET} %s\n" "$url"
 printf "  ${CLR_DIM}端口:${CLR_RESET} %s\n" "$port"; printf "  ${CLR_DIM}网络:${CLR_RESET} %b\n" "$mode_desc"
 [ -n "$auth" ] && printf "  ${CLR_DIM}初始凭据:${CLR_RESET} %s\n" "$auth"; printf "  ${CLR_DIM}路径:${CLR_RESET} %s\n\n" "$target_dir"
 if [ "$port" != "-" ]; then
@@ -2923,23 +3023,49 @@ fi
 local target_dir="/opt/vps-sh/apps/$name"
 while true; do
 clear; local st=$(app_status "$name"); local port=$(app_get_port "$name"); local host=$(app_get_host "$name")
-local auth=$(app_get_auth "$name"); local net_desc="${host} (公网直接访问) · 防火墙已放行"
-[ "$host" = "127.0.0.1" ] && net_desc="${host} (本地反代模式) · 不向外网暴露"; local st_clr="$CLR_DIM"; [ "$st" = "运行中" ] && st_clr="$CLR_GREEN"
-[ "$st" = "部分运行" ] && st_clr="$CLR_YELLOW"; [ "$st" = "启动异常" ] && st_clr="$CLR_RED"; [ "$st" = "已停止" ] && st_clr="$CLR_RED"
-printf -- "${CLR_BOLD}--- 应用详情 ---${CLR_RESET}\n\n"; printf "  ${CLR_DIM}应用:${CLR_RESET} %s\n" "$name"
-printf "  ${CLR_DIM}状态:${CLR_RESET} %b%s%b\n" "$st_clr" "$st" "$CLR_RESET"
+local auth=$(app_get_auth "$name"); local custom_url=$(app_get_url "$name"); local show_url="$url"; local cf_routes=""
+if [ "$name" = "cloudflared" ]; then
+local cf_dash=""; cf_dash=$(_app_cf_account_url 2>/dev/null || true); [ -n "$cf_dash" ] && show_url="$cf_dash"
+[ "$st" = "运行中" ] && cf_routes=$(_app_cf_routes 2>/dev/null || true)
+fi
+local access_disp=""
 if [ "$port" != "-" ]; then
-printf "  ${CLR_DIM}端口:${CLR_RESET} %s\n" "$port"; printf "  ${CLR_DIM}网络:${CLR_RESET} %b\n" "$net_desc"
+if [ -n "$custom_url" ]; then
+access_disp="${CLR_GREEN}${custom_url}${CLR_RESET}"; elif [ "$host" = "127.0.0.1" ]; then local cf_url=""
+cf_routes=$(_app_cf_routes 2>/dev/null || true); cf_url=$(_app_cf_match_host "$name" "$port" "$cf_routes")
+if [ -n "$cf_url" ]; then
+access_disp="${CLR_GREEN}${cf_url}${CLR_RESET} ${CLR_DIM}(via cloudflared)${CLR_RESET}"
+else
+access_disp="http://127.0.0.1:${port} ${CLR_DIM}(本地反代 · 按 [u] 可记录域名)${CLR_RESET}"
+fi
+else
+local pub_ip=$(_app_public_ip); access_disp="http://${pub_ip:-<服务器IP>}:${port}"
+fi
+fi
+local net_desc="${host} (公网直接访问) · 防火墙已放行"; [ "$host" = "127.0.0.1" ] && net_desc="${host} (本地反代模式) · 不向外网暴露"; local st_clr="$CLR_DIM"
+[ "$st" = "运行中" ] && st_clr="$CLR_GREEN"; [ "$st" = "部分运行" ] && st_clr="$CLR_YELLOW"; [ "$st" = "启动异常" ] && st_clr="$CLR_RED"
+[ "$st" = "已停止" ] && st_clr="$CLR_RED"; printf -- "${CLR_BOLD}--- 应用详情 ---${CLR_RESET}\n\n"
+printf "  ${CLR_DIM}应用:${CLR_RESET} %s\n" "$name"; printf "  ${CLR_DIM}状态:${CLR_RESET} %b%s%b\n" "$st_clr" "$st" "$CLR_RESET"
+if [ "$port" != "-" ]; then
+printf "  ${CLR_DIM}访问:${CLR_RESET} %b\n" "$access_disp"; printf "  ${CLR_DIM}端口:${CLR_RESET} %s\n" "$port"
+printf "  ${CLR_DIM}网络:${CLR_RESET} %b\n" "$net_desc"
 else
 printf "  ${CLR_DIM}网络:${CLR_RESET} 本地/出站模式 · 无需暴露公网端口\n"
+if [ -n "$cf_routes" ]; then
+printf "  ${CLR_DIM}隧道路由:${CLR_RESET}\n"; local r_h r_s
+while IFS='|' read -r r_h r_s; do
+[ -n "$r_h" ] && printf "    ${CLR_GREEN}https://%s${CLR_RESET} ${CLR_DIM}-> %s${CLR_RESET}\n" "$r_h" "$r_s"
+done <<< "$cf_routes"
 fi
-[ -n "$auth" ] && printf "  ${CLR_DIM}初始凭据:${CLR_RESET} %s\n" "$auth"; [ -n "$url" ] && printf "  ${CLR_DIM}链接:${CLR_RESET} %s\n" "$url"
+fi
+[ -n "$auth" ] && printf "  ${CLR_DIM}初始凭据:${CLR_RESET} %s\n" "$auth"
+[ -n "$show_url" ] && printf "  ${CLR_DIM}官网:${CLR_RESET} %s\n" "$show_url"
 [ -d "$target_dir/data" ] && printf "  ${CLR_DIM}数据:${CLR_RESET} %s/data\n" "$target_dir"
 printf "  ${CLR_DIM}说明:${CLR_RESET} %s\n\n" "$desc"; local act_toggle="[2] 停止"; [ "$st" = "已停止" ] && act_toggle="[2] 启动"
 printf "${CLR_CYAN}[1]${CLR_RESET} 重启    ${CLR_CYAN}%s${CLR_RESET}    ${CLR_CYAN}[3]${CLR_RESET} 日志\n" "$act_toggle"
 printf "${CLR_CYAN}[4]${CLR_RESET} 更新    ${CLR_CYAN}[5]${CLR_RESET} 卸载    ${CLR_CYAN}[6]${CLR_RESET} 编辑配置\n\n"
 if [ "$port" != "-" ]; then
-printf "${CLR_CYAN}[p]${CLR_RESET} 修改端口    ${CLR_CYAN}[h]${CLR_RESET} 切换网络    ${CLR_DIM}[0] 返回${CLR_RESET}\n\n"
+printf "${CLR_CYAN}[p]${CLR_RESET} 修改端口    ${CLR_CYAN}[h]${CLR_RESET} 切换网络    ${CLR_CYAN}[u]${CLR_RESET} 访问地址    ${CLR_DIM}[0] 返回${CLR_RESET}\n\n"
 else
 printf "${CLR_DIM}[0] 返回${CLR_RESET}\n\n"
 fi
@@ -2989,6 +3115,10 @@ p|P)
 read -r -p "按回车返回..."; ;;
 h|H)
 [ "$port" = "-" ] && continue; printf "正在切换网络模式...\n"; app_host "$name" toggle || true; read -r -p "按回车返回..."; ;;
+u|U)
+[ "$port" = "-" ] && continue; local prompt_u="请输入访问地址 (如 https://app.example.com，输入 clear 清除，回车取消): "
+[ -n "$custom_url" ] && prompt_u="请输入访问地址 [$custom_url] (输入 clear 清除，回车取消): "; read -r -p "$prompt_u" input_url
+[ -z "$input_url" ] && continue; app_url "$name" "$input_url" || true; read -r -p "按回车返回..."; ;;
 0|*)
 return 0; ;;
 esac

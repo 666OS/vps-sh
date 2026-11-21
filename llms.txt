@@ -68,6 +68,7 @@ All commands are non-interactive (except sec_gen_key, which is TTY-only), idempo
 - `vs app_install <id> [port] [host]`: Deploy application from market template (e.g. `vs app_install npm 81`) and auto-open all published compose ports when bound to `0.0.0.0`.
 - `vs app_port <id> <port>`: Change application host port, recreate container, and atomically sync firewall ports (auto-rolls back on Compose failure).
 - `vs app_host <id> <0.0.0.0|127.0.0.1|toggle>`: Switch application bind address (`0.0.0.0` public or `127.0.0.1` local proxy), recreate container, and atomically sync firewall ports.
+- `vs app_url <id> <url|clear>`: Record or clear the application's access URL (`APP_URL` in `.env`, e.g. custom reverse-proxy domain) without restarting the container.
 - `vs app_update <id>`: Pull latest image and recreate application container.
 - `vs app_restart <id>`: Restart application container.
 - `vs app_stop <id>`: Stop application container.
